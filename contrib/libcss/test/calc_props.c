@@ -612,6 +612,19 @@ static void test_em_uses_calc_font_size(void)
     destroy_style_case(&ctx);
 }
 
+static void test_ic_calc_width(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css("* { width: calc(1ic + 1px); }", &ctx);
+    int px = 0;
+
+    /* Regression: calc() lengths using ic must convert through css__to_css_unit(). */
+    assert(css_computed_width_px(style, &unit_ctx, 200, &px) == CSS_WIDTH_SET);
+    assert(px == 17);
+
+    destroy_style_case(&ctx);
+}
+
 int main(void)
 {
     test_calc_property_getters();
@@ -621,6 +634,7 @@ int main(void)
     test_flex_basis_px_calc();
     test_font_size_calc_roundtrip();
     test_em_uses_calc_font_size();
+    test_ic_calc_width();
 
     printf("PASS\n");
     return 0;
