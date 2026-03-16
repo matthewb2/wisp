@@ -376,6 +376,69 @@ static inline bool lh__length_to_px(const css_computed_style *style, const css_u
     return true;
 }
 
+static inline css_unit_ctx lh__with_container_dimensions(
+    const css_unit_ctx *unit_len_ctx, int container_width, int container_height)
+{
+    css_unit_ctx ctx = *unit_len_ctx;
+
+    if (container_width >= 0) {
+        ctx.container_width = css_unit_device2css_px(INTTOFIX(container_width), unit_len_ctx->device_dpi);
+    }
+
+    if (container_height >= 0) {
+        ctx.container_height = css_unit_device2css_px(INTTOFIX(container_height), unit_len_ctx->device_dpi);
+    }
+
+    return ctx;
+}
+
+static inline int lh__available_height_for_box(const struct box *box, int viewport_height)
+{
+    struct box *containing_block = NULL;
+    enum css_height_e cbhtype = CSS_HEIGHT_AUTO;
+
+    if (box == NULL || box->style == NULL) {
+        return -1;
+    }
+
+    if (css_computed_position(box->style) == CSS_POSITION_ABSOLUTE && box->parent) {
+        assert(box->float_container);
+        containing_block = box->float_container;
+    } else if (box->parent && (box->parent->type == BOX_FLOAT_LEFT || box->parent->type == BOX_FLOAT_RIGHT)) {
+        struct box *cb = box->parent;
+
+        while (cb != NULL &&
+            (cb->style == NULL || cb->type == BOX_INLINE_CONTAINER || cb->type == BOX_FLOAT_LEFT ||
+                cb->type == BOX_FLOAT_RIGHT)) {
+            cb = cb->parent;
+        }
+        containing_block = cb;
+    } else if (box->parent && box->parent->type != BOX_INLINE_CONTAINER) {
+        containing_block = box->parent;
+    } else if (box->parent && box->parent->type == BOX_INLINE_CONTAINER) {
+        assert(box->parent->parent);
+        containing_block = box->parent->parent;
+    }
+
+    if (containing_block != NULL) {
+        css_fixed_or_calc f = (css_fixed_or_calc)0;
+        css_unit u = CSS_UNIT_PX;
+
+        cbhtype = css_computed_height(containing_block->style, &f, &u);
+    }
+
+    if (containing_block != NULL && containing_block->height != AUTO &&
+        (css_computed_position(box->style) == CSS_POSITION_ABSOLUTE || cbhtype == CSS_HEIGHT_SET)) {
+        return containing_block->height;
+    }
+
+    if ((!box->parent || !box->parent->parent) && viewport_height >= 0) {
+        return viewport_height;
+    }
+
+    return -1;
+}
+
 /**
  * Adjust a specified width or height for the box-sizing property.
  *
@@ -435,12 +498,14 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
     struct css_size *min_width, int *max_height, struct css_size *min_height, int margin[4], int padding[4],
     struct box_border border[4])
 {
-    struct box *containing_block = NULL;
+    int available_height = lh__available_height_for_box(box, viewport_height);
+    css_unit_ctx box_unit_ctx = lh__with_container_dimensions(unit_len_ctx, available_width, available_height);
+    const css_unit_ctx *box_unit_len_ctx = &box_unit_ctx;
     unsigned int i;
 
     if (width) {
-        if (css_computed_width_px(style, unit_len_ctx, available_width, width) == CSS_WIDTH_SET) {
-            layout_handle_box_sizing(unit_len_ctx, box, available_width, true, width);
+        if (css_computed_width_px(style, box_unit_len_ctx, available_width, width) == CSS_WIDTH_SET) {
+            layout_handle_box_sizing(box_unit_len_ctx, box, available_width, true, width);
         } else {
             *width = AUTO;
         }
@@ -455,53 +520,6 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
 
         if (htype == CSS_HEIGHT_SET) {
             if (unit == CSS_UNIT_PCT || unit == CSS_UNIT_CALC) {
-                enum css_height_e cbhtype;
-                int available_height = -1;
-
-                if (css_computed_position(box->style) == CSS_POSITION_ABSOLUTE && box->parent) {
-                    /* Box is absolutely positioned */
-                    assert(box->float_container);
-                    containing_block = box->float_container;
-                } else if (box->parent &&
-                    (box->parent->type == BOX_FLOAT_LEFT || box->parent->type == BOX_FLOAT_RIGHT)) {
-                    /* Box is child of a float wrapper - walk up to find containing block with style.
-                     * Skip BOX_INLINE_CONTAINER and BOX_FLOAT_* which have NULL styles by design. */
-                    struct box *cb = box->parent;
-                    while (cb != NULL &&
-                        (cb->style == NULL || cb->type == BOX_INLINE_CONTAINER || cb->type == BOX_FLOAT_LEFT ||
-                            cb->type == BOX_FLOAT_RIGHT)) {
-                        cb = cb->parent;
-                    }
-                    containing_block = cb;
-                } else if (box->parent && box->parent->type != BOX_INLINE_CONTAINER) {
-                    /* Box is a block level element */
-                    containing_block = box->parent;
-                } else if (box->parent && box->parent->type == BOX_INLINE_CONTAINER) {
-                    /* Box is an inline block */
-                    assert(box->parent->parent);
-                    containing_block = box->parent->parent;
-                }
-
-                if (containing_block) {
-                    css_fixed_or_calc f = (css_fixed_or_calc)0;
-                    css_unit u = CSS_UNIT_PX;
-
-                    cbhtype = css_computed_height(containing_block->style, &f, &u);
-                }
-
-                if (containing_block && containing_block->height != AUTO &&
-                    (css_computed_position(box->style) == CSS_POSITION_ABSOLUTE || cbhtype == CSS_HEIGHT_SET)) {
-                    /* Box is absolutely positioned or its
-                     * containing block has a valid
-                     * specified height.
-                     * (CSS 2.1 Section 10.5) */
-                    available_height = containing_block->height;
-                } else if ((!box->parent || !box->parent->parent) && viewport_height >= 0) {
-                    /* If root element or it's child
-                     * (HTML or BODY) */
-                    available_height = viewport_height;
-                }
-
                 if (unit == CSS_UNIT_PCT) {
                     if (available_height >= 0) {
                         *height = FPCT_OF_INT_TOINT(value.value, available_height);
@@ -510,19 +528,19 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
                         *height = AUTO;
                     }
                 } else {
-                    if (!lh__length_to_px(style, unit_len_ctx, available_height, value, unit, height)) {
+                    if (!lh__length_to_px(style, box_unit_len_ctx, available_height, value, unit, height)) {
                         *height = AUTO;
                     }
                 }
             } else {
-                *height = FIXTOINT(css_unit_len2device_px(style, unit_len_ctx, value.value, unit));
+                *height = FIXTOINT(css_unit_len2device_px(style, box_unit_len_ctx, value.value, unit));
             }
         } else {
             *height = AUTO;
         }
 
         if (*height != AUTO) {
-            layout_handle_box_sizing(unit_len_ctx, box, available_width, false, height);
+            layout_handle_box_sizing(box_unit_len_ctx, box, available_width, false, height);
         }
     }
 
@@ -537,11 +555,11 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
             if (unit == CSS_UNIT_PCT) {
                 *max_width = FPCT_OF_INT_TOINT(value.value, available_width);
             } else if (unit == CSS_UNIT_CALC) {
-                if (!lh__length_to_px(style, unit_len_ctx, available_width, value, unit, max_width)) {
+                if (!lh__length_to_px(style, box_unit_len_ctx, available_width, value, unit, max_width)) {
                     *max_width = -1;
                 }
             } else {
-                *max_width = FIXTOINT(css_unit_len2device_px(style, unit_len_ctx, value.value, unit));
+                *max_width = FIXTOINT(css_unit_len2device_px(style, box_unit_len_ctx, value.value, unit));
             }
         } else {
             /* Inadmissible */
@@ -549,7 +567,7 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
         }
 
         if (*max_width != -1) {
-            layout_handle_box_sizing(unit_len_ctx, box, available_width, true, max_width);
+            layout_handle_box_sizing(box_unit_len_ctx, box, available_width, true, max_width);
         }
     }
 
@@ -565,12 +583,12 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
             if (unit == CSS_UNIT_PCT) {
                 min_width->value = FPCT_OF_INT_TOINT(value.value, available_width);
             } else if (unit == CSS_UNIT_CALC) {
-                if (!lh__length_to_px(style, unit_len_ctx, available_width, value, unit, &min_width->value)) {
+                if (!lh__length_to_px(style, box_unit_len_ctx, available_width, value, unit, &min_width->value)) {
                     min_width->type = CSS_SIZE_AUTO;
                     min_width->value = 0;
                 }
             } else {
-                min_width->value = FIXTOINT(css_unit_len2device_px(style, unit_len_ctx, value.value, unit));
+                min_width->value = FIXTOINT(css_unit_len2device_px(style, box_unit_len_ctx, value.value, unit));
             }
         } else {
             /* min-width: auto */
@@ -579,7 +597,7 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
         }
 
         if (min_width->value != 0) {
-            layout_handle_box_sizing(unit_len_ctx, box, available_width, true, &min_width->value);
+            layout_handle_box_sizing(box_unit_len_ctx, box, available_width, true, &min_width->value);
         }
     }
 
@@ -595,11 +613,11 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
                 /* TODO: handle percentage */
                 *max_height = -1;
             } else if (unit == CSS_UNIT_CALC) {
-                if (!lh__length_to_px(style, unit_len_ctx, -1, value, unit, max_height)) {
+                if (!lh__length_to_px(style, box_unit_len_ctx, -1, value, unit, max_height)) {
                     *max_height = -1;
                 }
             } else {
-                *max_height = FIXTOINT(css_unit_len2device_px(style, unit_len_ctx, value.value, unit));
+                *max_height = FIXTOINT(css_unit_len2device_px(style, box_unit_len_ctx, value.value, unit));
             }
         } else {
             /* Inadmissible */
@@ -620,12 +638,12 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
                 /* TODO: handle percentage */
                 min_height->value = 0;
             } else if (unit == CSS_UNIT_CALC) {
-                if (!lh__length_to_px(style, unit_len_ctx, -1, value, unit, &min_height->value)) {
+                if (!lh__length_to_px(style, box_unit_len_ctx, -1, value, unit, &min_height->value)) {
                     min_height->type = CSS_SIZE_AUTO;
                     min_height->value = 0;
                 }
             } else {
-                min_height->value = FIXTOINT(css_unit_len2device_px(style, unit_len_ctx, value.value, unit));
+                min_height->value = FIXTOINT(css_unit_len2device_px(style, box_unit_len_ctx, value.value, unit));
             }
         } else {
             /* min-height: auto */
@@ -646,11 +664,11 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
                 if (unit == CSS_UNIT_PCT) {
                     margin[i] = FPCT_OF_INT_TOINT(value.value, available_width);
                 } else if (unit == CSS_UNIT_CALC) {
-                    if (!lh__length_to_px(style, unit_len_ctx, available_width, value, unit, &margin[i])) {
+                    if (!lh__length_to_px(style, box_unit_len_ctx, available_width, value, unit, &margin[i])) {
                         margin[i] = AUTO;
                     }
                 } else {
-                    margin[i] = FIXTOINT(css_unit_len2device_px(style, unit_len_ctx, value.value, unit));
+                    margin[i] = FIXTOINT(css_unit_len2device_px(style, box_unit_len_ctx, value.value, unit));
                 }
             } else {
                 margin[i] = AUTO;
@@ -666,11 +684,11 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
             if (unit == CSS_UNIT_PCT) {
                 padding[i] = FPCT_OF_INT_TOINT(value.value, available_width);
             } else if (unit == CSS_UNIT_CALC) {
-                if (!lh__length_to_px(style, unit_len_ctx, available_width, value, unit, &padding[i])) {
+                if (!lh__length_to_px(style, box_unit_len_ctx, available_width, value, unit, &padding[i])) {
                     padding[i] = 0;
                 }
             } else {
-                padding[i] = FIXTOINT(css_unit_len2device_px(style, unit_len_ctx, value.value, unit));
+                padding[i] = FIXTOINT(css_unit_len2device_px(style, box_unit_len_ctx, value.value, unit));
             }
         }
 
@@ -693,11 +711,11 @@ static inline void layout_find_dimensions(const css_unit_ctx *unit_len_ctx, int 
                 border[i].width = 0;
             else {
                 if (unit == CSS_UNIT_CALC) {
-                    if (!lh__length_to_px(style, unit_len_ctx, -1, value, unit, &border[i].width)) {
+                    if (!lh__length_to_px(style, box_unit_len_ctx, -1, value, unit, &border[i].width)) {
                         border[i].width = 0;
                     }
                 } else {
-                    border[i].width = FIXTOINT(css_unit_len2device_px(style, unit_len_ctx, value.value, unit));
+                    border[i].width = FIXTOINT(css_unit_len2device_px(style, box_unit_len_ctx, value.value, unit));
                 }
             }
 

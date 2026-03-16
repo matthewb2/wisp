@@ -734,6 +734,9 @@ static inline bool layout_flex__base_and_main_sizes(
     struct flex_ctx *ctx, struct flex_item_data *item, int available_main_size, int available_cross_size)
 {
     struct box *b = item->box;
+    int container_width = ctx->horizontal ? available_main_size : available_cross_size;
+    int container_height = ctx->horizontal ? available_cross_size : available_main_size;
+    css_unit_ctx flex_unit_len_ctx = lh__with_container_dimensions(ctx->unit_len_ctx, container_width, container_height);
     int content_min_width = b->min_width.value;
     int content_max_width = b->max_width;
     int delta_outer_main = lh__delta_outer_main(ctx->flex, b);
@@ -760,7 +763,7 @@ static inline bool layout_flex__base_and_main_sizes(
          * For column flex: percentages resolve against available height (main axis).
          * If the reference size is indefinite (AUTO), percentage resolves to 'auto' per spec. */
         int basis_px = 0;
-        uint8_t basis_type = css_computed_flex_basis_px(b->style, ctx->unit_len_ctx, available_main_size, &basis_px);
+        uint8_t basis_type = css_computed_flex_basis_px(b->style, &flex_unit_len_ctx, available_main_size, &basis_px);
 
         /* Track if this item has percentage flex-basis for two-pass layout.
          * In column flex with indefinite height, we'll need to re-resolve this
@@ -774,7 +777,7 @@ static inline bool layout_flex__base_and_main_sizes(
             /* Handle box-sizing: border-box by converting to content-box.
              * The delta_outer_main will be added later at line 314, so we
              * need to subtract padding+border now if box-sizing is border-box. */
-            layout_handle_box_sizing(ctx->unit_len_ctx, b, available_cross_size, ctx->horizontal, &basis_px);
+            layout_handle_box_sizing(&flex_unit_len_ctx, b, available_cross_size, ctx->horizontal, &basis_px);
 
             /* For column flex with flex-basis: 0 (e.g., from 'flex: 1'), the item
              * should still grow to fit its content. The 0 means "start from content

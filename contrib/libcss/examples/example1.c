@@ -67,6 +67,8 @@ static css_error get_libcss_node_data(void *pw, void *n, void **libcss_node_data
 static css_unit_ctx unit_len_ctx = {
     .viewport_width = 800 * (1 << CSS_RADIX_POINT),
     .viewport_height = 600 * (1 << CSS_RADIX_POINT),
+    .container_width = 800 * (1 << CSS_RADIX_POINT),
+    .container_height = 600 * (1 << CSS_RADIX_POINT),
     .font_size_default = 16 * (1 << CSS_RADIX_POINT),
     .font_size_minimum = 6 * (1 << CSS_RADIX_POINT),
     .device_dpi = 96 * (1 << CSS_RADIX_POINT),

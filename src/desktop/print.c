@@ -248,6 +248,8 @@ print_make_settings(print_configuration configuration, const char *filename, con
     css_unit_ctx unit_len_ctx = {
         .viewport_width = DEFAULT_PAGE_WIDTH,
         .viewport_height = DEFAULT_PAGE_HEIGHT,
+        .container_width = DEFAULT_PAGE_WIDTH,
+        .container_height = DEFAULT_PAGE_HEIGHT,
         .root_style = NULL,
     };
 
