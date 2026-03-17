@@ -342,6 +342,8 @@ static void html_get_dimensions(html_content *htmlc)
     htmlc->media.height = h;
     htmlc->unit_len_ctx.viewport_width = w;
     htmlc->unit_len_ctx.viewport_height = h;
+    htmlc->unit_len_ctx.container_width = w;
+    htmlc->unit_len_ctx.container_height = h;
     htmlc->unit_len_ctx.device_dpi = device_dpi;
 
     NSLOG(wisp, DEEPDEBUG, "DIAG: html_get_dimensions: media.width=%u media.height=%u (CSS px)", FIXTOINT(w),
@@ -1274,6 +1276,8 @@ static void html_reformat(struct content *c, int width, int height)
 
     htmlc->unit_len_ctx.viewport_width = css_unit_device2css_px(INTTOFIX(width), htmlc->unit_len_ctx.device_dpi);
     htmlc->unit_len_ctx.viewport_height = css_unit_device2css_px(INTTOFIX(height), htmlc->unit_len_ctx.device_dpi);
+    htmlc->unit_len_ctx.container_width = htmlc->unit_len_ctx.viewport_width;
+    htmlc->unit_len_ctx.container_height = htmlc->unit_len_ctx.viewport_height;
     htmlc->unit_len_ctx.root_style = htmlc->layout->style;
 
     layout_document(htmlc, width, height);

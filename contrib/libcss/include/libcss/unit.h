@@ -44,6 +44,18 @@ typedef struct css_unit_ctx {
      */
     css_fixed viewport_height;
     /**
+     * Container width in CSS pixels.
+     * Used if unit is cqw or cqi (after axis mapping).
+     * If unset (<= 0), viewport_width is used as a fallback.
+     */
+    css_fixed container_width;
+    /**
+     * Container height in CSS pixels.
+     * Used if unit is cqh or cqb (after axis mapping).
+     * If unset (<= 0), viewport_height is used as a fallback.
+     */
+    css_fixed container_height;
+    /**
      * Client default font size in CSS pixels.
      */
     css_fixed font_size_default;

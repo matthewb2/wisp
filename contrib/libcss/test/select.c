@@ -719,6 +719,10 @@ static css_error get_libcss_node_data(void *pw, void *n, void **libcss_node_data
 }
 
 static css_unit_ctx unit_ctx = {
+    .viewport_width = 0,
+    .viewport_height = 0,
+    .container_width = 0,
+    .container_height = 0,
     .font_size_default = 16 * (1 << CSS_RADIX_POINT),
     .device_dpi = 96 * (1 << CSS_RADIX_POINT),
 };

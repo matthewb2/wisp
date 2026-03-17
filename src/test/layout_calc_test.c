@@ -421,6 +421,8 @@ static css_select_handler select_handler = {
 static css_unit_ctx unit_ctx = {
     .viewport_width = 200 * (1 << CSS_RADIX_POINT),
     .viewport_height = 100 * (1 << CSS_RADIX_POINT),
+    .container_width = 200 * (1 << CSS_RADIX_POINT),
+    .container_height = 100 * (1 << CSS_RADIX_POINT),
     .font_size_default = 16 * (1 << CSS_RADIX_POINT),
     .font_size_minimum = 0,
     .device_dpi = 96 * (1 << CSS_RADIX_POINT),
@@ -633,6 +635,110 @@ START_TEST(test_layout_find_dimensions_calc_height_uses_viewport)
 }
 END_TEST
 
+START_TEST(test_layout_find_dimensions_cq_units_use_box_container)
+{
+    select_ctx ctx;
+    css_unit_ctx cq_ctx = unit_ctx;
+    const css_computed_style *style =
+        select_style_from_css("* { width: 50cqw; height: 25cqh; margin-left: 10cqw; }", &ctx);
+    struct box box;
+    int width = 0;
+    int height = 0;
+    int margin[4] = {0};
+
+    memset(&box, 0, sizeof(box));
+    box.type = BOX_BLOCK;
+    box.style = (css_computed_style *)style;
+
+    cq_ctx.container_width = 999 * (1 << CSS_RADIX_POINT);
+    cq_ctx.container_height = 777 * (1 << CSS_RADIX_POINT);
+
+    layout_find_dimensions(
+        &cq_ctx, 200, 300, &box, style, &width, &height, NULL, NULL, NULL, NULL, margin, NULL, NULL);
+
+    ck_assert_int_eq(width, 100);
+    ck_assert_int_eq(height, 75);
+    ck_assert_int_eq(margin[LEFT], 20);
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
+START_TEST(test_inset_shorthand_sets_absolute_offsets)
+{
+    select_ctx ctx;
+    const css_computed_style *style = select_style_from_css("* { position: absolute; inset: 0; }", &ctx);
+    css_fixed_or_calc len = {.value = 123};
+    css_unit unit = CSS_UNIT_EM;
+
+    ck_assert_int_eq(css_computed_top(style, &len, &unit), CSS_TOP_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 0);
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_right(style, &len, &unit), CSS_RIGHT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 0);
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_bottom(style, &len, &unit), CSS_BOTTOM_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 0);
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_left(style, &len, &unit), CSS_LEFT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 0);
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
+START_TEST(test_inset_inline_shorthand_sets_left_and_right)
+{
+    select_ctx ctx;
+    const css_computed_style *style = select_style_from_css("* { position: absolute; inset-inline: 2px 4px; }", &ctx);
+    css_fixed_or_calc len = {.value = 123};
+    css_unit unit = CSS_UNIT_EM;
+
+    ck_assert_int_eq(css_computed_left(style, &len, &unit), CSS_LEFT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 2 * (1 << CSS_RADIX_POINT));
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_right(style, &len, &unit), CSS_RIGHT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 4 * (1 << CSS_RADIX_POINT));
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
+START_TEST(test_inset_block_shorthand_sets_top_and_bottom)
+{
+    select_ctx ctx;
+    const css_computed_style *style = select_style_from_css("* { position: absolute; inset-block: 1px 3px; }", &ctx);
+    css_fixed_or_calc len = {.value = 123};
+    css_unit unit = CSS_UNIT_EM;
+
+    ck_assert_int_eq(css_computed_top(style, &len, &unit), CSS_TOP_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 1 * (1 << CSS_RADIX_POINT));
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_bottom(style, &len, &unit), CSS_BOTTOM_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 3 * (1 << CSS_RADIX_POINT));
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
 Suite *layout_calc_suite(void)
 {
     Suite *s = suite_create("LayoutCalc");
@@ -643,6 +749,10 @@ Suite *layout_calc_suite(void)
     tcase_add_test(tc_core, test_calculate_mbp_width_calc);
     tcase_add_test(tc_core, test_layout_find_dimensions_calc_height_unknown_is_auto);
     tcase_add_test(tc_core, test_layout_find_dimensions_calc_height_uses_viewport);
+    tcase_add_test(tc_core, test_layout_find_dimensions_cq_units_use_box_container);
+    tcase_add_test(tc_core, test_inset_shorthand_sets_absolute_offsets);
+    tcase_add_test(tc_core, test_inset_inline_shorthand_sets_left_and_right);
+    tcase_add_test(tc_core, test_inset_block_shorthand_sets_top_and_bottom);
 
     suite_add_tcase(s, tc_core);
     return s;

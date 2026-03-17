@@ -418,6 +418,8 @@ typedef struct {
 static css_unit_ctx unit_ctx = {
     .viewport_width = 200 * (1 << CSS_RADIX_POINT),
     .viewport_height = 100 * (1 << CSS_RADIX_POINT),
+    .container_width = 200 * (1 << CSS_RADIX_POINT),
+    .container_height = 100 * (1 << CSS_RADIX_POINT),
     .font_size_default = 16 * (1 << CSS_RADIX_POINT),
     .font_size_minimum = 0,
     .device_dpi = 96 * (1 << CSS_RADIX_POINT),
@@ -612,6 +614,34 @@ static void test_em_uses_calc_font_size(void)
     destroy_style_case(&ctx);
 }
 
+static void test_ic_calc_width(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css("* { width: calc(1ic + 1px); }", &ctx);
+    int px = 0;
+
+    /* Regression: calc() lengths using ic must convert through css__to_css_unit(). */
+    assert(css_computed_width_px(style, &unit_ctx, 200, &px) == CSS_WIDTH_SET);
+    assert(px == 17);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_cqw_calc_width_uses_container(void)
+{
+    style_case ctx;
+    css_unit_ctx cqw_ctx = unit_ctx;
+    const css_computed_style *style = select_style_from_css("* { width: calc(50cqw + 10px); }", &ctx);
+    int px = 0;
+
+    cqw_ctx.container_width = 300 * (1 << CSS_RADIX_POINT);
+
+    assert(css_computed_width_px(style, &cqw_ctx, 200, &px) == CSS_WIDTH_SET);
+    assert(px == 160);
+
+    destroy_style_case(&ctx);
+}
+
 int main(void)
 {
     test_calc_property_getters();
@@ -621,6 +651,8 @@ int main(void)
     test_flex_basis_px_calc();
     test_font_size_calc_roundtrip();
     test_em_uses_calc_font_size();
+    test_ic_calc_width();
+    test_cqw_calc_width_uses_container();
 
     printf("PASS\n");
     return 0;

@@ -176,6 +176,9 @@ css_error css__parse_margin_side_value(
 css_error css__parse_border_side_width_value(
     css_language *c, const parserutils_vector *vector, int32_t *ctx, css_style *result, enum css_properties_e op);
 
+css_error css__parse_side_value(
+    css_language *c, const parserutils_vector *vector, int32_t *ctx, css_style *result, enum css_properties_e op);
+
 css_error css__parse_row_gap_value(
     css_language *c, const parserutils_vector *vector, int32_t *ctx, css_style *result);
 

@@ -55,6 +55,12 @@ static inline css_unit css__to_css_unit(uint32_t u)
         return CSS_UNIT_VMAX;
     case UNIT_Q:
         return CSS_UNIT_Q;
+    case UNIT_IC:
+        return CSS_UNIT_IC;
+    case UNIT_CQW:
+        return CSS_UNIT_CQW;
+    case UNIT_CQH:
+        return CSS_UNIT_CQH;
     case UNIT_PCT:
         return CSS_UNIT_PCT;
     case UNIT_DEG:
@@ -84,6 +90,8 @@ static inline css_unit css__to_css_unit(uint32_t u)
     /* Some cascade paths set this directly after parsing calc(). */
     case CSS_UNIT_CALC:
         return CSS_UNIT_CALC;
+    case UNIT_CALC_NUMBER:
+        return CSS_UNIT_NUMBER;
     }
 
     /* Unhandled unit type - fail in debug to catch missing conversions */

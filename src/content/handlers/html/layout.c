@@ -1558,13 +1558,14 @@ static struct box *layout_next_margin_block(const css_unit_ctx *unit_len_ctx, st
                     *max_neg_margin = -(unsigned int)box->margin[BOTTOM];
             }
 
-            /* To next sibling. */
+            /* To next sibling.
+             * CSS 2.1 §8.3.1 only allows collapse with the next in-flow
+             * sibling, so skip out-of-flow boxes here and let the top of
+             * the loop compute margins for the next valid participant. */
             box = box->next;
-
-            /* Get margins */
-            if (box->style) {
-                layout_find_dimensions(unit_len_ctx, box->parent->width, viewport_height, box, box->style, NULL, NULL,
-                    NULL, NULL, NULL, NULL, box->margin, box->padding, box->border);
+            while (box != NULL && box_is_out_of_flow(box)) {
+                NSLOG(layout, DEBUG, "margin collapse: skipping out-of-flow sibling %p type=%d", box, box->type);
+                box = box->next;
             }
         }
     }
