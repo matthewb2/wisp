@@ -12,6 +12,8 @@
 extern "C" {
 #endif
 
+#include <limits.h>
+
 #include <libcss/types.h>
 
 /**
@@ -23,6 +25,15 @@ extern "C" {
  * \return length in CSS pixels.
  */
 typedef css_fixed (*css_unit_len_measure)(void *pw, const css_computed_style *style, const css_unit unit);
+
+/**
+ * Explicit sentinel value for unset container query dimensions in css_unit_ctx.
+ *
+ * Any negative container width/height is treated as unset, but callers should
+ * prefer this named value when they want cqw/cqh/cqi/cqb units to fall back to
+ * the viewport dimensions.
+ */
+#define CSS_UNIT_CTX_UNSET ((css_fixed)INT_MIN)
 
 /**
  * LibCSS unit conversion context.
@@ -46,13 +57,13 @@ typedef struct css_unit_ctx {
     /**
      * Container width in CSS pixels.
      * Used if unit is cqw or cqi (after axis mapping).
-     * If unset (<= 0), viewport_width is used as a fallback.
+     * If unset (< 0), viewport_width is used as a fallback.
      */
     css_fixed container_width;
     /**
      * Container height in CSS pixels.
      * Used if unit is cqh or cqb (after axis mapping).
-     * If unset (<= 0), viewport_height is used as a fallback.
+     * If unset (< 0), viewport_height is used as a fallback.
      */
     css_fixed container_height;
     /**
