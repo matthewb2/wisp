@@ -56,12 +56,12 @@ static inline css_unit css_unit__map_viewport_units(const css_computed_style *st
 
 static inline css_fixed css_unit__effective_container_width(const css_unit_ctx *ctx)
 {
-    return (ctx->container_width > 0) ? ctx->container_width : ctx->viewport_width;
+    return (ctx->container_width >= 0) ? ctx->container_width : ctx->viewport_width;
 }
 
 static inline css_fixed css_unit__effective_container_height(const css_unit_ctx *ctx)
 {
-    return (ctx->container_height > 0) ? ctx->container_height : ctx->viewport_height;
+    return (ctx->container_height >= 0) ? ctx->container_height : ctx->viewport_height;
 }
 
 /**

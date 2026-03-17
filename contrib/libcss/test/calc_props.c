@@ -642,6 +642,40 @@ static void test_cqw_calc_width_uses_container(void)
     destroy_style_case(&ctx);
 }
 
+static void test_cq_units_zero_container_resolve_to_zero(void)
+{
+    style_case ctx;
+    css_unit_ctx cq_ctx = unit_ctx;
+    const css_computed_style *style = select_style_from_css("* { width: 50cqw; height: 25cqh; }", &ctx);
+    int px = 0;
+
+    cq_ctx.container_width = 0;
+    cq_ctx.container_height = 0;
+
+    assert(css_computed_width_px(style, &cq_ctx, 200, &px) == CSS_WIDTH_SET);
+    assert(px == 0);
+    expect_calc_px("cqh-zero-container", style, &cq_ctx, -1, css_computed_height, CSS_HEIGHT_SET, 0);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_cq_units_unset_container_falls_back_to_viewport(void)
+{
+    style_case ctx;
+    css_unit_ctx cq_ctx = unit_ctx;
+    const css_computed_style *style = select_style_from_css("* { width: 50cqw; height: 25cqh; }", &ctx);
+    int px = 0;
+
+    cq_ctx.container_width = CSS_UNIT_CTX_UNSET;
+    cq_ctx.container_height = CSS_UNIT_CTX_UNSET;
+
+    assert(css_computed_width_px(style, &cq_ctx, 200, &px) == CSS_WIDTH_SET);
+    assert(px == 100);
+    expect_calc_px("cqh-unset-container", style, &cq_ctx, -1, css_computed_height, CSS_HEIGHT_SET, 25);
+
+    destroy_style_case(&ctx);
+}
+
 int main(void)
 {
     test_calc_property_getters();
@@ -653,6 +687,8 @@ int main(void)
     test_em_uses_calc_font_size();
     test_ic_calc_width();
     test_cqw_calc_width_uses_container();
+    test_cq_units_zero_container_resolve_to_zero();
+    test_cq_units_unset_container_falls_back_to_viewport();
 
     printf("PASS\n");
     return 0;

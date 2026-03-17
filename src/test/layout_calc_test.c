@@ -664,6 +664,64 @@ START_TEST(test_layout_find_dimensions_cq_units_use_box_container)
 }
 END_TEST
 
+START_TEST(test_lh_length_to_px_cq_units_zero_container_resolve_to_zero)
+{
+    select_ctx ctx;
+    css_unit_ctx cq_ctx = unit_ctx;
+    const css_computed_style *style = select_style_from_css("* { width: 50cqw; height: 25cqh; }", &ctx);
+    css_fixed_or_calc len = {.value = 0};
+    css_unit unit = CSS_UNIT_PX;
+    int px = -1;
+
+    cq_ctx.container_width = 0;
+    cq_ctx.container_height = 0;
+
+    ck_assert_int_eq(css_computed_width(style, &len, &unit), CSS_WIDTH_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_CQW);
+    ck_assert(lh__length_to_px(style, &cq_ctx, -1, len, unit, &px));
+    ck_assert_int_eq(px, 0);
+
+    len.value = 0;
+    unit = CSS_UNIT_PX;
+    px = -1;
+    ck_assert_int_eq(css_computed_height(style, &len, &unit), CSS_HEIGHT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_CQH);
+    ck_assert(lh__length_to_px(style, &cq_ctx, -1, len, unit, &px));
+    ck_assert_int_eq(px, 0);
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
+START_TEST(test_lh_length_to_px_cq_units_unset_container_uses_viewport)
+{
+    select_ctx ctx;
+    css_unit_ctx cq_ctx = unit_ctx;
+    const css_computed_style *style = select_style_from_css("* { width: 50cqw; height: 25cqh; }", &ctx);
+    css_fixed_or_calc len = {.value = 0};
+    css_unit unit = CSS_UNIT_PX;
+    int px = -1;
+
+    cq_ctx.container_width = CSS_UNIT_CTX_UNSET;
+    cq_ctx.container_height = CSS_UNIT_CTX_UNSET;
+
+    ck_assert_int_eq(css_computed_width(style, &len, &unit), CSS_WIDTH_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_CQW);
+    ck_assert(lh__length_to_px(style, &cq_ctx, -1, len, unit, &px));
+    ck_assert_int_eq(px, 100);
+
+    len.value = 0;
+    unit = CSS_UNIT_PX;
+    px = -1;
+    ck_assert_int_eq(css_computed_height(style, &len, &unit), CSS_HEIGHT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_CQH);
+    ck_assert(lh__length_to_px(style, &cq_ctx, -1, len, unit, &px));
+    ck_assert_int_eq(px, 25);
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
 START_TEST(test_inset_shorthand_sets_absolute_offsets)
 {
     select_ctx ctx;
@@ -750,6 +808,8 @@ Suite *layout_calc_suite(void)
     tcase_add_test(tc_core, test_layout_find_dimensions_calc_height_unknown_is_auto);
     tcase_add_test(tc_core, test_layout_find_dimensions_calc_height_uses_viewport);
     tcase_add_test(tc_core, test_layout_find_dimensions_cq_units_use_box_container);
+    tcase_add_test(tc_core, test_lh_length_to_px_cq_units_zero_container_resolve_to_zero);
+    tcase_add_test(tc_core, test_lh_length_to_px_cq_units_unset_container_uses_viewport);
     tcase_add_test(tc_core, test_inset_shorthand_sets_absolute_offsets);
     tcase_add_test(tc_core, test_inset_inline_shorthand_sets_left_and_right);
     tcase_add_test(tc_core, test_inset_block_shorthand_sets_top_and_bottom);
