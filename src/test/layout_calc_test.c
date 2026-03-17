@@ -664,6 +664,81 @@ START_TEST(test_layout_find_dimensions_cq_units_use_box_container)
 }
 END_TEST
 
+START_TEST(test_inset_shorthand_sets_absolute_offsets)
+{
+    select_ctx ctx;
+    const css_computed_style *style = select_style_from_css("* { position: absolute; inset: 0; }", &ctx);
+    css_fixed_or_calc len = {.value = 123};
+    css_unit unit = CSS_UNIT_EM;
+
+    ck_assert_int_eq(css_computed_top(style, &len, &unit), CSS_TOP_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 0);
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_right(style, &len, &unit), CSS_RIGHT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 0);
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_bottom(style, &len, &unit), CSS_BOTTOM_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 0);
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_left(style, &len, &unit), CSS_LEFT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 0);
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
+START_TEST(test_inset_inline_shorthand_sets_left_and_right)
+{
+    select_ctx ctx;
+    const css_computed_style *style = select_style_from_css("* { position: absolute; inset-inline: 2px 4px; }", &ctx);
+    css_fixed_or_calc len = {.value = 123};
+    css_unit unit = CSS_UNIT_EM;
+
+    ck_assert_int_eq(css_computed_left(style, &len, &unit), CSS_LEFT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 2 * (1 << CSS_RADIX_POINT));
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_right(style, &len, &unit), CSS_RIGHT_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 4 * (1 << CSS_RADIX_POINT));
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
+START_TEST(test_inset_block_shorthand_sets_top_and_bottom)
+{
+    select_ctx ctx;
+    const css_computed_style *style = select_style_from_css("* { position: absolute; inset-block: 1px 3px; }", &ctx);
+    css_fixed_or_calc len = {.value = 123};
+    css_unit unit = CSS_UNIT_EM;
+
+    ck_assert_int_eq(css_computed_top(style, &len, &unit), CSS_TOP_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 1 * (1 << CSS_RADIX_POINT));
+
+    len.value = 123;
+    unit = CSS_UNIT_EM;
+    ck_assert_int_eq(css_computed_bottom(style, &len, &unit), CSS_BOTTOM_SET);
+    ck_assert_int_eq(unit, CSS_UNIT_PX);
+    ck_assert_int_eq(len.value, 3 * (1 << CSS_RADIX_POINT));
+
+    destroy_select_ctx(&ctx);
+}
+END_TEST
+
 Suite *layout_calc_suite(void)
 {
     Suite *s = suite_create("LayoutCalc");
@@ -675,6 +750,9 @@ Suite *layout_calc_suite(void)
     tcase_add_test(tc_core, test_layout_find_dimensions_calc_height_unknown_is_auto);
     tcase_add_test(tc_core, test_layout_find_dimensions_calc_height_uses_viewport);
     tcase_add_test(tc_core, test_layout_find_dimensions_cq_units_use_box_container);
+    tcase_add_test(tc_core, test_inset_shorthand_sets_absolute_offsets);
+    tcase_add_test(tc_core, test_inset_inline_shorthand_sets_left_and_right);
+    tcase_add_test(tc_core, test_inset_block_shorthand_sets_top_and_bottom);
 
     suite_add_tcase(s, tc_core);
     return s;

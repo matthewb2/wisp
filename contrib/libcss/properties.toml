@@ -429,6 +429,30 @@ condition = "CSS_BOTTOM_SET"
 override = "get"
 parse = "WRAP:css__parse_side"
 
+[inset]
+enum = "CSS_PROP_INSET"
+inherited = false
+shorthand = true
+cascade = "none"
+computed = "none"
+helper_longhands = ["side"]
+
+[inset_block]
+enum = "CSS_PROP_INSET_BLOCK"
+inherited = false
+shorthand = true
+cascade = "none"
+computed = "none"
+helper_longhands = ["side"]
+
+[inset_inline]
+enum = "CSS_PROP_INSET_INLINE"
+inherited = false
+shorthand = true
+cascade = "none"
+computed = "none"
+helper_longhands = ["side"]
+
 [caption_side]
 enum = "CSS_PROP_CAPTION_SIDE"
 cascade = "ident"

@@ -152,7 +152,6 @@ enum {
     LIBCSS_DOUBLE,
     GROOVE,
     RIDGE,
-    INSET,
     OUTSET,
     THIN,
     MEDIUM,
