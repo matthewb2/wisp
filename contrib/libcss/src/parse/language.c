@@ -1977,6 +1977,8 @@ css_error parseProperty(
                 return error;
             }
 
+            c->sheet->uses_variables = true;
+
             return CSS_OK;
         }
     }
@@ -2214,6 +2216,8 @@ css_error parseCustomProperty(
         css__stylesheet_style_destroy(style);
         return error;
     }
+
+    c->sheet->uses_variables = true;
 
     return CSS_OK;
 }

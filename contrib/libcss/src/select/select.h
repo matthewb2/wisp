@@ -95,6 +95,7 @@ typedef struct css_select_state {
     struct css_node_data *node_data; /* Data we'll store on node */
 
     css_var_context *var_ctx;  /* Working variable context during selection */
+    bool collecting_vars; /* First pass: collect final custom properties only */
 
     prop_state props[CSS_N_PROPERTIES][CSS_PSEUDO_ELEMENT_COUNT];
 } css_select_state;

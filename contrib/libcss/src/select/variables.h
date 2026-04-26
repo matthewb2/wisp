@@ -9,6 +9,7 @@
 
 #include <libwapcaplet/libwapcaplet.h>
 #include <libcss/errors.h>
+#include <libcss/types.h>
 
 /**
  * A single custom property binding: name → value.
@@ -17,6 +18,10 @@
 typedef struct css_var_entry {
     lwc_string *name;   /* e.g. "--primary" */
     lwc_string *value;  /* raw CSS text, e.g. "blue" */
+    uint32_t specificity;
+    css_origin origin;
+    bool important;
+    bool cascaded;      /* false when this is only an inherited value */
 } css_var_entry;
 
 /**
@@ -42,6 +47,14 @@ css_error css__variables_ctx_create(css_var_context **out);
 css_error css__variables_ctx_clone(const css_var_context *src, css_var_context **out);
 
 /**
+ * Clone a parent context for child inheritance. Values are preserved for
+ * lookup, but cascade metadata is reset so any child declaration wins.
+ */
+css_error css__variables_ctx_clone_inherited(
+    const css_var_context *src,
+    css_var_context **out);
+
+/**
  * Destroy a variable context and unref all strings.
  */
 void css__variables_ctx_destroy(css_var_context *ctx);
@@ -54,6 +67,17 @@ css_error css__variables_ctx_set(css_var_context *ctx,
     lwc_string *name, lwc_string *value);
 
 /**
+ * Cascade a variable declaration into the context.
+ */
+css_error css__variables_ctx_cascade(
+    css_var_context *ctx,
+    lwc_string *name,
+    lwc_string *value,
+    css_origin origin,
+    uint32_t specificity,
+    bool important);
+
+/**
  * Look up a variable by name.
  * Returns the value lwc_string (not ref'd — caller must ref if keeping),
  * or NULL if not found.
@@ -64,7 +88,7 @@ lwc_string *css__variables_ctx_get(const css_var_context *ctx,
 /* --- Phase 5: var() Resolution --- */
 
 /* Max recursion depth for nested var() references */
-#define CSS_VAR_MAX_DEPTH 20
+#define CSS_VAR_MAX_DEPTH 64
 
 /* Forward declarations */
 struct css_stylesheet;

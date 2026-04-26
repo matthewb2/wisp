@@ -35,13 +35,145 @@ const struct css_prop_entry *css_prop_lookup(
 
 #define VAR_CTX_INITIAL_CAPACITY 4
 
-#define MAX_VAR_DEPTH 10
-
 static css_error css__resolve_tokens(
     lwc_string *value,
     const css_var_context *var_ctx,
     parserutils_vector *out_tokens,
     int depth);
+
+static void css__tokens_truncate(
+    parserutils_vector *tokens,
+    size_t keep_len)
+{
+    size_t current_len = 0;
+
+    parserutils_vector_get_length(tokens, &current_len);
+    while (current_len > keep_len) {
+        const css_token *tok = parserutils_vector_peek(tokens, current_len - 1);
+        if (tok != NULL && tok->idata != NULL)
+            lwc_string_unref(tok->idata);
+        parserutils_vector_remove_last(tokens);
+        current_len--;
+    }
+}
+
+static inline const char *css__var_token_get_str(
+    const css_token *token,
+    size_t *len)
+{
+    if (token->idata != NULL) {
+        *len = lwc_string_length(token->idata);
+        return lwc_string_data(token->idata);
+    }
+
+    if (token->data.data != NULL) {
+        *len = token->data.len;
+        return (const char *)token->data.data;
+    }
+
+    switch (token->type) {
+    case CSS_TOKEN_S:
+        *len = 1;
+        return " ";
+    case CSS_TOKEN_CDO:
+        *len = 4;
+        return "<!--";
+    case CSS_TOKEN_CDC:
+        *len = 3;
+        return "-->";
+    case CSS_TOKEN_INCLUDES:
+        *len = 2;
+        return "~=";
+    case CSS_TOKEN_DASHMATCH:
+        *len = 2;
+        return "|=";
+    case CSS_TOKEN_PREFIXMATCH:
+        *len = 2;
+        return "^=";
+    case CSS_TOKEN_SUFFIXMATCH:
+        *len = 2;
+        return "$=";
+    case CSS_TOKEN_SUBSTRINGMATCH:
+        *len = 2;
+        return "*=";
+    default:
+        *len = 0;
+        return "";
+    }
+}
+
+static css_error css__tokens_to_string(
+    const parserutils_vector *tokens,
+    lwc_string **out)
+{
+    const css_token *token;
+    lwc_error lerr;
+    int32_t ctx;
+    size_t total_len = 0;
+    size_t offset = 0;
+    char *buf;
+
+    ctx = 0;
+    while ((token = parserutils_vector_iterate(tokens, &ctx)) != NULL) {
+        size_t tok_len = 0;
+
+        css__var_token_get_str(token, &tok_len);
+
+        if (token->type == CSS_TOKEN_HASH)
+            total_len += 1;
+        else if (token->type == CSS_TOKEN_FUNCTION)
+            total_len += 1;
+        else if (token->type == CSS_TOKEN_STRING)
+            total_len += 2;
+        else if (token->type == CSS_TOKEN_URI)
+            total_len += 6;
+
+        total_len += tok_len;
+    }
+
+    buf = malloc(total_len + 1);
+    if (buf == NULL)
+        return CSS_NOMEM;
+
+    ctx = 0;
+    while ((token = parserutils_vector_iterate(tokens, &ctx)) != NULL) {
+        size_t tok_len = 0;
+        const char *tok_str = css__var_token_get_str(token, &tok_len);
+
+        if (token->type == CSS_TOKEN_HASH) {
+            buf[offset++] = '#';
+            memcpy(buf + offset, tok_str, tok_len);
+            offset += tok_len;
+        } else if (token->type == CSS_TOKEN_FUNCTION) {
+            memcpy(buf + offset, tok_str, tok_len);
+            offset += tok_len;
+            buf[offset++] = '(';
+        } else if (token->type == CSS_TOKEN_STRING) {
+            buf[offset++] = '"';
+            memcpy(buf + offset, tok_str, tok_len);
+            offset += tok_len;
+            buf[offset++] = '"';
+        } else if (token->type == CSS_TOKEN_URI) {
+            memcpy(buf + offset, "url(\"", 5);
+            offset += 5;
+            memcpy(buf + offset, tok_str, tok_len);
+            offset += tok_len;
+            buf[offset++] = '"';
+            buf[offset++] = ')';
+        } else {
+            memcpy(buf + offset, tok_str, tok_len);
+            offset += tok_len;
+        }
+    }
+
+    lerr = lwc_intern_string(buf, offset, out);
+    free(buf);
+
+    if (lerr != lwc_error_ok)
+        return css_error_from_lwc_error(lerr);
+
+    return CSS_OK;
+}
 
 /**
  * Handle a `var(` ... `)` sequence from the token stream.
@@ -146,14 +278,7 @@ static css_error css__handle_var_function(
 
         if (error != CSS_OK) {
             /* If resolving failed (e.g., due to a cycle), rollback the tokens we appended */
-            size_t current_len = 0;
-            parserutils_vector_get_length(out_tokens, &current_len);
-            while (current_len > initial_len) {
-                const css_token *tok = parserutils_vector_peek(out_tokens, current_len - 1);
-                if (tok != NULL && tok->idata != NULL) lwc_string_unref(tok->idata);
-                parserutils_vector_remove_last(out_tokens);
-                current_len--;
-            }
+            css__tokens_truncate(out_tokens, initial_len);
         }
     } else {
         error = CSS_INVALID;
@@ -161,20 +286,20 @@ static css_error css__handle_var_function(
 
     if (error != CSS_OK) {
         if (has_fallback) {
-            error = CSS_OK;
-            int32_t ctx2 = 0;
-            const css_token *fb_tok;
-            while ((fb_tok = parserutils_vector_iterate(fallback_tokens, &ctx2)) != NULL) {
-                css_token copy = *fb_tok;
-                if (copy.idata != NULL) {
-                    lwc_string_ref(copy.idata);
-                }
-                perr = parserutils_vector_append(out_tokens, &copy);
-                if (perr != PARSERUTILS_OK) {
-                    if (copy.idata != NULL) lwc_string_unref(copy.idata);
-                    error = css_error_from_parserutils_error(perr); goto cleanup;
-                }
+            lwc_string *fallback_value = NULL;
+            size_t initial_len = 0;
+
+            parserutils_vector_get_length(out_tokens, &initial_len);
+
+            error = css__tokens_to_string(fallback_tokens, &fallback_value);
+            if (error == CSS_OK) {
+                error = css__resolve_tokens(
+                    fallback_value, var_ctx, out_tokens, depth + 1);
+                lwc_string_unref(fallback_value);
             }
+
+            if (error != CSS_OK)
+                css__tokens_truncate(out_tokens, initial_len);
         } else {
             goto cleanup;
         }
@@ -205,7 +330,7 @@ static css_error css__resolve_tokens(
     css_error error = CSS_OK;
     parserutils_error perr;
 
-    if (depth > MAX_VAR_DEPTH) return CSS_INVALID;
+    if (depth > CSS_VAR_MAX_DEPTH) return CSS_INVALID;
 
     perr = parserutils_inputstream_create("UTF-8", 0, NULL, &input);
     if (perr != PARSERUTILS_OK) { return css_error_from_parserutils_error(perr); }
@@ -286,7 +411,10 @@ css_error css__variables_ctx_create(css_var_context **out)
     return CSS_OK;
 }
 
-css_error css__variables_ctx_clone(const css_var_context *src, css_var_context **out)
+static css_error css__variables_ctx_clone_common(
+    const css_var_context *src,
+    css_var_context **out,
+    bool inherited)
 {
     css_var_context *ctx;
     css_error error;
@@ -308,11 +436,34 @@ css_error css__variables_ctx_clone(const css_var_context *src, css_var_context *
         for (uint32_t i = 0; i < src->count; i++) {
             ctx->entries[i].name = lwc_string_ref(src->entries[i].name);
             ctx->entries[i].value = lwc_string_ref(src->entries[i].value);
+            if (inherited) {
+                ctx->entries[i].specificity = 0;
+                ctx->entries[i].origin = CSS_ORIGIN_UA;
+                ctx->entries[i].important = false;
+                ctx->entries[i].cascaded = false;
+            } else {
+                ctx->entries[i].specificity = src->entries[i].specificity;
+                ctx->entries[i].origin = src->entries[i].origin;
+                ctx->entries[i].important = src->entries[i].important;
+                ctx->entries[i].cascaded = src->entries[i].cascaded;
+            }
         }
     }
 
     *out = ctx;
     return CSS_OK;
+}
+
+css_error css__variables_ctx_clone(const css_var_context *src, css_var_context **out)
+{
+    return css__variables_ctx_clone_common(src, out, false);
+}
+
+css_error css__variables_ctx_clone_inherited(
+    const css_var_context *src,
+    css_var_context **out)
+{
+    return css__variables_ctx_clone_common(src, out, true);
 }
 
 void css__variables_ctx_destroy(css_var_context *ctx)
@@ -338,6 +489,10 @@ css_error css__variables_ctx_set(css_var_context *ctx,
             /* Replace value */
             lwc_string_unref(ctx->entries[i].value);
             ctx->entries[i].value = lwc_string_ref(value);
+            ctx->entries[i].origin = CSS_ORIGIN_AUTHOR;
+            ctx->entries[i].specificity = 0;
+            ctx->entries[i].important = false;
+            ctx->entries[i].cascaded = true;
             return CSS_OK;
         }
     }
@@ -357,6 +512,96 @@ css_error css__variables_ctx_set(css_var_context *ctx,
 
     ctx->entries[ctx->count].name = lwc_string_ref(name);
     ctx->entries[ctx->count].value = lwc_string_ref(value);
+    ctx->entries[ctx->count].origin = CSS_ORIGIN_AUTHOR;
+    ctx->entries[ctx->count].specificity = 0;
+    ctx->entries[ctx->count].important = false;
+    ctx->entries[ctx->count].cascaded = true;
+    ctx->count++;
+
+    return CSS_OK;
+}
+
+static bool css__variable_decl_outranks(
+    const css_var_entry *existing,
+    css_origin origin,
+    uint32_t specificity,
+    bool important)
+{
+    if (existing->cascaded == false)
+        return true;
+
+    if (existing->origin < origin) {
+        if (existing->important == false ||
+                existing->origin != CSS_ORIGIN_USER) {
+            return true;
+        }
+    } else if (existing->origin == origin) {
+        if (existing->origin == CSS_ORIGIN_UA) {
+            return specificity >= existing->specificity;
+        } else if (existing->important == false && important) {
+            return true;
+        } else if (existing->important && important == false) {
+            return false;
+        } else {
+            return specificity >= existing->specificity;
+        }
+    } else {
+        if (origin == CSS_ORIGIN_USER && important)
+            return true;
+    }
+
+    return false;
+}
+
+static void css__variables_ctx_update_metadata(
+    css_var_entry *entry,
+    css_origin origin,
+    uint32_t specificity,
+    bool important)
+{
+    entry->origin = origin;
+    entry->specificity = specificity;
+    entry->important = important;
+    entry->cascaded = true;
+}
+
+css_error css__variables_ctx_cascade(
+    css_var_context *ctx,
+    lwc_string *name,
+    lwc_string *value,
+    css_origin origin,
+    uint32_t specificity,
+    bool important)
+{
+    for (uint32_t i = 0; i < ctx->count; i++) {
+        if (ctx->entries[i].name == name) {
+            if (css__variable_decl_outranks(&ctx->entries[i],
+                    origin, specificity, important)) {
+                lwc_string_unref(ctx->entries[i].value);
+                ctx->entries[i].value = lwc_string_ref(value);
+                css__variables_ctx_update_metadata(&ctx->entries[i],
+                    origin, specificity, important);
+            }
+            return CSS_OK;
+        }
+    }
+
+    if (ctx->count >= ctx->capacity) {
+        uint32_t new_cap = ctx->capacity == 0
+            ? VAR_CTX_INITIAL_CAPACITY
+            : ctx->capacity * 2;
+        css_var_entry *new_entries = realloc(ctx->entries,
+            new_cap * sizeof(css_var_entry));
+        if (new_entries == NULL)
+            return CSS_NOMEM;
+        ctx->entries = new_entries;
+        ctx->capacity = new_cap;
+    }
+
+    ctx->entries[ctx->count].name = lwc_string_ref(name);
+    ctx->entries[ctx->count].value = lwc_string_ref(value);
+    css__variables_ctx_update_metadata(&ctx->entries[ctx->count],
+        origin, specificity, important);
     ctx->count++;
 
     return CSS_OK;
@@ -376,6 +621,113 @@ lwc_string *css__variables_ctx_get(const css_var_context *ctx,
     return NULL;
 }
 
+static css_error css__cascade_resolved_style(
+    css_style *result_style,
+    bool important,
+    css_select_state *state)
+{
+    css_style rs = *result_style;
+
+    while (rs.used > 0) {
+        css_code_t result_opv = *rs.bytecode;
+        opcode_t result_op;
+
+        advance_bytecode(&rs, sizeof(result_opv));
+        result_op = getOpcode(result_opv);
+
+        if (important)
+            result_opv |= FLAG_IMPORTANT;
+
+        if (result_op < CSS_N_PROPERTIES) {
+            css_error error = prop_dispatch[result_op].cascade(
+                result_opv, &rs, state);
+            if (error != CSS_OK)
+                return error;
+        }
+    }
+
+    return CSS_OK;
+}
+
+static css_error css__cascade_unset_property(
+    const struct css_prop_entry *entry,
+    css_stylesheet *sheet,
+    bool important,
+    css_select_state *state)
+{
+    css_error error;
+    parserutils_error perr;
+    parserutils_vector *tokens = NULL;
+    css_style *result_style = NULL;
+    css_language resolve_lang;
+    css_token unset_token;
+    css_token eof_token;
+    lwc_string *unset = NULL;
+    int32_t token_ctx = 0;
+
+    if (entry == NULL)
+        return CSS_INVALID;
+
+    error = css_error_from_lwc_error(
+        lwc_intern_string("unset", SLEN("unset"), &unset));
+    if (error != CSS_OK)
+        return error;
+
+    perr = parserutils_vector_create(sizeof(css_token), 2, &tokens);
+    if (perr != PARSERUTILS_OK) {
+        lwc_string_unref(unset);
+        return css_error_from_parserutils_error(perr);
+    }
+
+    unset_token.type = CSS_TOKEN_IDENT;
+    unset_token.data.data = (uint8_t *)"unset";
+    unset_token.data.len = SLEN("unset");
+    unset_token.idata = unset;
+    unset_token.col = 0;
+    unset_token.line = 0;
+
+    eof_token.type = CSS_TOKEN_EOF;
+    eof_token.data.data = NULL;
+    eof_token.data.len = 0;
+    eof_token.idata = NULL;
+    eof_token.col = 0;
+    eof_token.line = 0;
+
+    perr = parserutils_vector_append(tokens, &unset_token);
+    if (perr != PARSERUTILS_OK) {
+        error = css_error_from_parserutils_error(perr);
+        goto cleanup;
+    }
+
+    perr = parserutils_vector_append(tokens, &eof_token);
+    if (perr != PARSERUTILS_OK) {
+        error = css_error_from_parserutils_error(perr);
+        goto cleanup;
+    }
+
+    memset(&resolve_lang, 0, sizeof(resolve_lang));
+    resolve_lang.sheet = sheet;
+    resolve_lang.strings = sheet->propstrings;
+
+    error = css__stylesheet_style_create(sheet, &result_style);
+    if (error != CSS_OK)
+        goto cleanup;
+
+    error = entry->handler(&resolve_lang, tokens, &token_ctx, result_style);
+    if (error == CSS_OK)
+        error = css__cascade_resolved_style(result_style, important, state);
+
+cleanup:
+    if (result_style != NULL)
+        css__stylesheet_style_destroy(result_style);
+    if (tokens != NULL)
+        parserutils_vector_destroy(tokens);
+    if (unset != NULL)
+        lwc_string_unref(unset);
+
+    return error;
+}
+
 css_error css__resolve_var_property(
     lwc_string *prop_name,
     lwc_string *raw_value,
@@ -388,8 +740,23 @@ css_error css__resolve_var_property(
     parserutils_error perr;
     parserutils_vector *tokens = NULL;
     css_style *result_style = NULL;
+    const struct css_prop_entry *entry;
 
-    /* Step 1: Resolve all var() references in the raw value text */
+    /* Step 1: Look up the property handler by name via gperf */
+    entry = css_prop_lookup(
+        lwc_string_data(prop_name), lwc_string_length(prop_name));
+
+    CSS_LOG(DEBUG, "VAR_RESOLVE: prop='%s' raw='%.*s'",
+        lwc_string_data(prop_name),
+        (int)lwc_string_length(raw_value), lwc_string_data(raw_value));
+
+    if (entry == NULL) {
+        CSS_LOG(DEBUG, "  Property '%s' not found in gperf table",
+            lwc_string_data(prop_name));
+        return CSS_INVALID;
+    }
+
+    /* Step 2: Resolve all var() references in the raw value text */
     perr = parserutils_vector_create(sizeof(css_token), 16, &tokens);
     if (perr != PARSERUTILS_OK) {
         return css_error_from_parserutils_error(perr);
@@ -397,6 +764,8 @@ css_error css__resolve_var_property(
 
     error = css__resolve_tokens(raw_value, var_ctx, tokens, 1);
     if (error != CSS_OK) {
+        if (error == CSS_INVALID)
+            error = css__cascade_unset_property(entry, sheet, important, state);
         goto cleanup;
     }
 
@@ -404,7 +773,7 @@ css_error css__resolve_var_property(
         size_t vec_len = 0;
         parserutils_vector_get_length(tokens, &vec_len);
         if (vec_len == 0) {
-            error = CSS_INVALID;
+            error = css__cascade_unset_property(entry, sheet, important, state);
             goto cleanup;
         }
     }
@@ -425,14 +794,6 @@ css_error css__resolve_var_property(
         }
     }
 
-    /* Step 2: Look up the property handler by name via gperf */
-    const struct css_prop_entry *entry = css_prop_lookup(
-        lwc_string_data(prop_name), lwc_string_length(prop_name));
-    
-    CSS_LOG(DEBUG, "VAR_RESOLVE: prop='%s' raw='%.*s'",
-        lwc_string_data(prop_name),
-        (int)lwc_string_length(raw_value), lwc_string_data(raw_value));
-    
 #if CSS_LOG_ENABLED
     /* Dump resolved tokens */
     {
@@ -452,13 +813,6 @@ css_error css__resolve_var_property(
     }
 #endif
     
-    if (entry == NULL) {
-        CSS_LOG(DEBUG, "  Property '%s' not found in gperf table",
-            lwc_string_data(prop_name));
-        error = CSS_INVALID;
-        goto cleanup;
-    }
-
     /* Step 3: Call the handler to parse resolved tokens into bytecode */
     css_language resolve_lang;
     memset(&resolve_lang, 0, sizeof(resolve_lang));
@@ -475,34 +829,16 @@ css_error css__resolve_var_property(
     if (error != CSS_OK) {
         css__stylesheet_style_destroy(result_style);
         result_style = NULL;
-        error = CSS_INVALID;
+        if (error == CSS_INVALID)
+            error = css__cascade_unset_property(entry, sheet, important, state);
         goto cleanup;
     }
 
     /* Step 4: Cascade all OPVs in the resulting style.
      * Longhands produce 1 OPV; shorthands produce multiple. */
-    {
-        css_style rs = *result_style;
-        while (rs.used > 0) {
-            css_code_t result_opv = *rs.bytecode;
-            advance_bytecode(&rs, sizeof(result_opv));
-
-            opcode_t result_op = getOpcode(result_opv);
-
-            /* Preserve importance from the original var() declaration */
-            if (important)
-                result_opv |= FLAG_IMPORTANT;
-
-            if (result_op < CSS_N_PROPERTIES) {
-                error = prop_dispatch[result_op].cascade(
-                    result_opv, &rs, state);
-                if (error != CSS_OK) {
-                    css__stylesheet_style_destroy(result_style);
-                    goto cleanup;
-                }
-            }
-        }
-    }
+    error = css__cascade_resolved_style(result_style, important, state);
+    if (error != CSS_OK)
+        goto cleanup;
 
     css__stylesheet_style_destroy(result_style);
     result_style = NULL;

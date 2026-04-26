@@ -216,6 +216,7 @@ struct css_stylesheet {
     bool quirks_used; /**< Quirks actually used */
 
     bool uses_revert; /**< Uses 'revert' property value */
+    bool uses_variables; /**< Uses custom properties or var() references */
 
     bool inline_style; /**< Is an inline style */
 
