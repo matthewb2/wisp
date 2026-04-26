@@ -902,6 +902,55 @@ static void test_variable_cycle_is_invalid(void)
     destroy_style_case(&ctx);
 }
 
+static void test_cycle_uses_property_fallback(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css(
+        "div { --a: var(--b); --b: var(--a); width: var(--a, 31px); }", &ctx);
+
+    expect_length_px("cycle property fallback width", style,
+        css_computed_width, CSS_WIDTH_SET, 31);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_custom_property_fallback_cycle_is_invalid(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css(
+        "div { --a: var(--b, 32px); --b: var(--a); width: var(--a); }", &ctx);
+
+    expect_length_type("custom property fallback cycle width", style,
+        css_computed_width, CSS_WIDTH_AUTO);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_noncyclic_var_can_fallback_from_cycle(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css(
+        "div { --a: var(--b); --b: var(--a);"
+        " --c: var(--a, 33px); width: var(--c); }", &ctx);
+
+    expect_length_px("noncyclic fallback from cycle width", style,
+        css_computed_width, CSS_WIDTH_SET, 33);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_self_reference_in_fallback_is_cycle(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css(
+        "div { --a: var(--missing, var(--a)); width: var(--a, 34px); }", &ctx);
+
+    expect_length_px("self fallback cycle width", style,
+        css_computed_width, CSS_WIDTH_SET, 34);
+
+    destroy_style_case(&ctx);
+}
+
 int main(void)
 {
     test_same_rule_custom_property_after_use();
@@ -917,6 +966,10 @@ int main(void)
     test_literal_fallback_value();
     test_shorthand_fallback_value();
     test_variable_cycle_is_invalid();
+    test_cycle_uses_property_fallback();
+    test_custom_property_fallback_cycle_is_invalid();
+    test_noncyclic_var_can_fallback_from_cycle();
+    test_self_reference_in_fallback_is_cycle();
 
     printf("PASS\n");
     return 0;

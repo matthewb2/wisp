@@ -13,15 +13,18 @@
 
 /**
  * A single custom property binding: name → value.
- * Both are ref-counted lwc_strings owned by this entry.
+ * Value storage is opaque; entries keep tokenized custom property text.
  */
+typedef struct css_var_value css_var_value;
+
 typedef struct css_var_entry {
     lwc_string *name;   /* e.g. "--primary" */
-    lwc_string *value;  /* raw CSS text, e.g. "blue" */
+    css_var_value *value;
     uint32_t specificity;
     css_origin origin;
     bool important;
     bool cascaded;      /* false when this is only an inherited value */
+    bool cyclic;
 } css_var_entry;
 
 /**
@@ -33,6 +36,7 @@ typedef struct css_var_context {
     css_var_entry *entries;
     uint32_t count;
     uint32_t capacity;
+    bool cycles_valid;
 } css_var_context;
 
 /**
@@ -107,7 +111,7 @@ struct css_select_state;
 css_error css__resolve_var_property(
     lwc_string *prop_name,
     lwc_string *raw_value,
-    const css_var_context *var_ctx,
+    css_var_context *var_ctx,
     struct css_stylesheet *sheet,
     bool important,
     struct css_select_state *state);

@@ -37,7 +37,13 @@ const struct css_prop_entry *css_prop_lookup(
 
 static css_error css__resolve_tokens(
     lwc_string *value,
-    const css_var_context *var_ctx,
+    css_var_context *var_ctx,
+    parserutils_vector *out_tokens,
+    int depth);
+
+static css_error css__resolve_token_vector(
+    const parserutils_vector *value,
+    css_var_context *var_ctx,
     parserutils_vector *out_tokens,
     int depth);
 
@@ -102,100 +108,407 @@ static inline const char *css__var_token_get_str(
     }
 }
 
-static css_error css__tokens_to_string(
-    const parserutils_vector *tokens,
-    lwc_string **out)
+struct css_var_value {
+    uint32_t refcnt;
+    lwc_string *raw;
+    parserutils_vector *tokens;
+    lwc_string **refs;
+    uint32_t ref_count;
+    uint32_t ref_capacity;
+};
+
+static bool css__is_var_function_token(const css_token *token)
 {
-    const css_token *token;
-    lwc_error lerr;
-    int32_t ctx;
-    size_t total_len = 0;
-    size_t offset = 0;
-    char *buf;
+    size_t len = 0;
+    const char *data;
 
-    ctx = 0;
-    while ((token = parserutils_vector_iterate(tokens, &ctx)) != NULL) {
-        size_t tok_len = 0;
+    if (token->type != CSS_TOKEN_FUNCTION)
+        return false;
 
-        css__var_token_get_str(token, &tok_len);
+    data = css__var_token_get_str(token, &len);
+    return len == 3 && strncasecmp(data, "var", 3) == 0;
+}
 
-        if (token->type == CSS_TOKEN_HASH)
-            total_len += 1;
-        else if (token->type == CSS_TOKEN_FUNCTION)
-            total_len += 1;
-        else if (token->type == CSS_TOKEN_STRING)
-            total_len += 2;
-        else if (token->type == CSS_TOKEN_URI)
-            total_len += 6;
+static void css__tokens_destroy(parserutils_vector *tokens)
+{
+    int32_t ctx = 0;
+    const css_token *tok;
 
-        total_len += tok_len;
+    if (tokens == NULL)
+        return;
+
+    while ((tok = parserutils_vector_iterate(tokens, &ctx)) != NULL) {
+        if (tok->idata != NULL)
+            lwc_string_unref(tok->idata);
     }
 
-    buf = malloc(total_len + 1);
-    if (buf == NULL)
-        return CSS_NOMEM;
+    parserutils_vector_destroy(tokens);
+}
 
-    ctx = 0;
-    while ((token = parserutils_vector_iterate(tokens, &ctx)) != NULL) {
-        size_t tok_len = 0;
-        const char *tok_str = css__var_token_get_str(token, &tok_len);
+static css_error css__tokens_append_ref(
+    parserutils_vector *tokens,
+    const css_token *token)
+{
+    parserutils_error perr;
+    css_token copy = *token;
 
-        if (token->type == CSS_TOKEN_HASH) {
-            buf[offset++] = '#';
-            memcpy(buf + offset, tok_str, tok_len);
-            offset += tok_len;
-        } else if (token->type == CSS_TOKEN_FUNCTION) {
-            memcpy(buf + offset, tok_str, tok_len);
-            offset += tok_len;
-            buf[offset++] = '(';
-        } else if (token->type == CSS_TOKEN_STRING) {
-            buf[offset++] = '"';
-            memcpy(buf + offset, tok_str, tok_len);
-            offset += tok_len;
-            buf[offset++] = '"';
-        } else if (token->type == CSS_TOKEN_URI) {
-            memcpy(buf + offset, "url(\"", 5);
-            offset += 5;
-            memcpy(buf + offset, tok_str, tok_len);
-            offset += tok_len;
-            buf[offset++] = '"';
-            buf[offset++] = ')';
+    if (copy.idata != NULL)
+        copy.idata = lwc_string_ref(copy.idata);
+
+    perr = parserutils_vector_append(tokens, &copy);
+    if (perr != PARSERUTILS_OK) {
+        if (copy.idata != NULL)
+            lwc_string_unref(copy.idata);
+        return css_error_from_parserutils_error(perr);
+    }
+
+    return CSS_OK;
+}
+
+static css_error css__var_value_add_reference(
+    css_var_value *value,
+    lwc_string *name)
+{
+    lwc_string **new_refs;
+    uint32_t new_cap;
+
+    for (uint32_t i = 0; i < value->ref_count; i++) {
+        if (value->refs[i] == name)
+            return CSS_OK;
+    }
+
+    if (value->ref_count >= value->ref_capacity) {
+        new_cap = value->ref_capacity == 0 ? 4 : value->ref_capacity * 2;
+        new_refs = realloc(value->refs, new_cap * sizeof(lwc_string *));
+        if (new_refs == NULL)
+            return CSS_NOMEM;
+
+        value->refs = new_refs;
+        value->ref_capacity = new_cap;
+    }
+
+    value->refs[value->ref_count++] = lwc_string_ref(name);
+    return CSS_OK;
+}
+
+static css_error css__tokenise_value(
+    lwc_string *raw,
+    parserutils_vector **out,
+    css_var_value *value)
+{
+    parserutils_inputstream *input = NULL;
+    css_lexer *lexer = NULL;
+    parserutils_vector *tokens = NULL;
+    parserutils_error perr;
+    css_error error;
+    bool expect_var_name = false;
+
+    perr = parserutils_vector_create(sizeof(css_token), 16, &tokens);
+    if (perr != PARSERUTILS_OK)
+        return css_error_from_parserutils_error(perr);
+
+    perr = parserutils_inputstream_create("UTF-8", 0, NULL, &input);
+    if (perr != PARSERUTILS_OK) {
+        error = css_error_from_parserutils_error(perr);
+        goto cleanup;
+    }
+
+    perr = parserutils_inputstream_append(input,
+        (const uint8_t *)lwc_string_data(raw), lwc_string_length(raw));
+    if (perr != PARSERUTILS_OK) {
+        error = css_error_from_parserutils_error(perr);
+        goto cleanup;
+    }
+
+    perr = parserutils_inputstream_append(input, NULL, 0);
+    if (perr != PARSERUTILS_OK) {
+        error = css_error_from_parserutils_error(perr);
+        goto cleanup;
+    }
+
+    error = css__lexer_create(input, &lexer);
+    if (error != CSS_OK)
+        goto cleanup;
+
+    while (1) {
+        css_token *token = NULL;
+        css_token copy;
+
+        error = css__lexer_get_token(lexer, &token);
+        if (error != CSS_OK)
+            goto cleanup;
+
+        if (token->type == CSS_TOKEN_EOF)
+            break;
+
+        copy = *token;
+        if (copy.type < CSS_TOKEN_LAST_INTERN && copy.data.data != NULL) {
+            lwc_error lerr = lwc_intern_string(
+                (char *)copy.data.data, copy.data.len, &copy.idata);
+            if (lerr != lwc_error_ok) {
+                error = css_error_from_lwc_error(lerr);
+                goto cleanup;
+            }
         } else {
-            memcpy(buf + offset, tok_str, tok_len);
-            offset += tok_len;
+            copy.idata = NULL;
+        }
+
+        if (expect_var_name) {
+            if (copy.type != CSS_TOKEN_S) {
+                expect_var_name = false;
+
+                if (value != NULL &&
+                        (copy.type == CSS_TOKEN_IDENT ||
+                        copy.type == CSS_TOKEN_CUSTOM_PROPERTY) &&
+                        copy.idata != NULL) {
+                    error = css__var_value_add_reference(value, copy.idata);
+                    if (error != CSS_OK) {
+                        if (copy.idata != NULL)
+                            lwc_string_unref(copy.idata);
+                        goto cleanup;
+                    }
+                }
+            }
+        }
+
+        if (css__is_var_function_token(&copy))
+            expect_var_name = true;
+
+        perr = parserutils_vector_append(tokens, &copy);
+        if (perr != PARSERUTILS_OK) {
+            if (copy.idata != NULL)
+                lwc_string_unref(copy.idata);
+            error = css_error_from_parserutils_error(perr);
+            goto cleanup;
         }
     }
 
-    lerr = lwc_intern_string(buf, offset, out);
-    free(buf);
+    *out = tokens;
+    tokens = NULL;
+    error = CSS_OK;
 
-    if (lerr != lwc_error_ok)
-        return css_error_from_lwc_error(lerr);
+cleanup:
+    if (lexer != NULL)
+        css__lexer_destroy(lexer);
+    if (input != NULL)
+        parserutils_inputstream_destroy(input);
+    css__tokens_destroy(tokens);
+
+    return error;
+}
+
+static css_error css__var_value_create(
+    lwc_string *raw,
+    css_var_value **out)
+{
+    css_var_value *value;
+    css_error error;
+
+    value = calloc(1, sizeof(*value));
+    if (value == NULL)
+        return CSS_NOMEM;
+
+    value->refcnt = 1;
+    value->raw = lwc_string_ref(raw);
+
+    error = css__tokenise_value(raw, &value->tokens, value);
+    if (error != CSS_OK) {
+        for (uint32_t i = 0; i < value->ref_count; i++)
+            lwc_string_unref(value->refs[i]);
+        free(value->refs);
+        lwc_string_unref(value->raw);
+        free(value);
+        return error;
+    }
+
+    *out = value;
+    return CSS_OK;
+}
+
+static css_var_value *css__var_value_ref(css_var_value *value)
+{
+    if (value != NULL)
+        value->refcnt++;
+
+    return value;
+}
+
+static void css__var_value_unref(css_var_value *value)
+{
+    if (value == NULL)
+        return;
+
+    if (--value->refcnt > 0)
+        return;
+
+    css__tokens_destroy(value->tokens);
+    for (uint32_t i = 0; i < value->ref_count; i++)
+        lwc_string_unref(value->refs[i]);
+    free(value->refs);
+    lwc_string_unref(value->raw);
+    free(value);
+}
+
+static bool css__variables_ctx_find_name(
+    const css_var_context *ctx,
+    lwc_string *name,
+    uint32_t *index)
+{
+    if (ctx == NULL)
+        return false;
+
+    for (uint32_t i = 0; i < ctx->count; i++) {
+        if (ctx->entries[i].name == name) {
+            if (index != NULL)
+                *index = i;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static css_var_value *css__variables_ctx_get_parsed(
+    const css_var_context *ctx,
+    lwc_string *name)
+{
+    uint32_t index;
+
+    if (css__variables_ctx_find_name(ctx, name, &index) == false)
+        return NULL;
+
+    return ctx->entries[index].value;
+}
+
+enum {
+    CSS_VAR_CYCLE_UNVISITED = 0,
+    CSS_VAR_CYCLE_VISITING = 1,
+    CSS_VAR_CYCLE_DONE = 2
+};
+
+typedef struct css_var_cycle_search {
+    css_var_context *ctx;
+    uint8_t *state;
+    uint32_t *stack;
+    uint32_t stack_len;
+} css_var_cycle_search;
+
+static css_error css__variables_ctx_visit_cycles(
+    css_var_cycle_search *search,
+    uint32_t index)
+{
+    css_var_entry *entry = &search->ctx->entries[index];
+
+    search->state[index] = CSS_VAR_CYCLE_VISITING;
+    search->stack[search->stack_len++] = index;
+
+    for (uint32_t i = 0; i < entry->value->ref_count; i++) {
+        uint32_t dep;
+
+        if (css__variables_ctx_find_name(search->ctx,
+                entry->value->refs[i], &dep) == false) {
+            continue;
+        }
+
+        if (search->state[dep] == CSS_VAR_CYCLE_VISITING) {
+            bool mark = false;
+
+            for (uint32_t j = 0; j < search->stack_len; j++) {
+                if (search->stack[j] == dep)
+                    mark = true;
+                if (mark)
+                    search->ctx->entries[search->stack[j]].cyclic = true;
+            }
+        } else if (search->state[dep] == CSS_VAR_CYCLE_UNVISITED) {
+            css_error error = css__variables_ctx_visit_cycles(search, dep);
+            if (error != CSS_OK)
+                return error;
+        }
+    }
+
+    search->stack_len--;
+    search->state[index] = CSS_VAR_CYCLE_DONE;
 
     return CSS_OK;
+}
+
+static css_error css__variables_ctx_ensure_cycles(css_var_context *ctx)
+{
+    css_var_cycle_search search;
+    css_error error = CSS_OK;
+
+    if (ctx == NULL || ctx->cycles_valid)
+        return CSS_OK;
+
+    if (ctx->count == 0) {
+        ctx->cycles_valid = true;
+        return CSS_OK;
+    }
+
+    memset(&search, 0, sizeof(search));
+    search.ctx = ctx;
+
+    search.state = calloc(ctx->count, sizeof(uint8_t));
+    search.stack = calloc(ctx->count, sizeof(uint32_t));
+    if (search.state == NULL || search.stack == NULL) {
+        error = CSS_NOMEM;
+        goto cleanup;
+    }
+
+    for (uint32_t i = 0; i < ctx->count; i++)
+        ctx->entries[i].cyclic = false;
+
+    for (uint32_t i = 0; i < ctx->count; i++) {
+        if (search.state[i] == CSS_VAR_CYCLE_UNVISITED) {
+            error = css__variables_ctx_visit_cycles(&search, i);
+            if (error != CSS_OK)
+                goto cleanup;
+        }
+    }
+
+    ctx->cycles_valid = true;
+
+cleanup:
+    free(search.state);
+    free(search.stack);
+
+    return error;
+}
+
+static bool css__token_is_char(const css_token *token, char c)
+{
+    size_t len = 0;
+    const char *data;
+
+    if (token->type != CSS_TOKEN_CHAR)
+        return false;
+
+    data = css__var_token_get_str(token, &len);
+    return len == 1 && data[0] == c;
 }
 
 /**
  * Handle a `var(` ... `)` sequence from the token stream.
  */
 static css_error css__handle_var_function(
-    css_lexer *lexer,
-    const css_var_context *var_ctx,
+    const parserutils_vector *value_tokens,
+    int32_t *token_ctx,
+    css_var_context *var_ctx,
     parserutils_vector *out_tokens,
     int depth)
 {
     css_error error;
     parserutils_error perr;
-    css_token *t = NULL;
+    const css_token *t = NULL;
     lwc_string *var_name = NULL;
+    css_var_value *resolved_val = NULL;
     parserutils_vector *fallback_tokens = NULL;
     bool has_fallback = false;
 
     /* Skip whitespace */
     while (1) {
-        error = css__lexer_get_token(lexer, &t);
-        if (error != CSS_OK) goto cleanup;
-        if (t->type == CSS_TOKEN_EOF) { error = CSS_INVALID; goto cleanup; }
+        t = parserutils_vector_iterate(value_tokens, token_ctx);
+        if (t == NULL) { error = CSS_INVALID; goto cleanup; }
         if (t->type != CSS_TOKEN_S) break;
     }
 
@@ -205,20 +518,24 @@ static css_error css__handle_var_function(
                 t->data.data != NULL ? (char *)t->data.data : "");
         error = CSS_INVALID; goto cleanup;
     }
-    lwc_error lerr = lwc_intern_string((char *)t->data.data, t->data.len, &var_name);
-    if (lerr != lwc_error_ok) {
-        error = css_error_from_lwc_error(lerr); goto cleanup;
+    if (t->idata != NULL) {
+        var_name = lwc_string_ref(t->idata);
+    } else {
+        lwc_error lerr = lwc_intern_string(
+            (char *)t->data.data, t->data.len, &var_name);
+        if (lerr != lwc_error_ok) {
+            error = css_error_from_lwc_error(lerr); goto cleanup;
+        }
     }
 
     /* Skip whitespace */
     while (1) {
-        error = css__lexer_get_token(lexer, &t);
-        if (error != CSS_OK) goto cleanup;
-        if (t->type == CSS_TOKEN_EOF) { error = CSS_INVALID; goto cleanup; }
+        t = parserutils_vector_iterate(value_tokens, token_ctx);
+        if (t == NULL) { error = CSS_INVALID; goto cleanup; }
         if (t->type != CSS_TOKEN_S) break;
     }
 
-    if (t->type == CSS_TOKEN_CHAR && t->data.len == 1 && t->data.data[0] == ',') {
+    if (css__token_is_char(t, ',')) {
         has_fallback = true;
         perr = parserutils_vector_create(sizeof(css_token), 16, &fallback_tokens);
         if (perr != PARSERUTILS_OK) {
@@ -226,55 +543,57 @@ static css_error css__handle_var_function(
         }
 
         while (1) {
-            error = css__lexer_get_token(lexer, &t);
-            if (error != CSS_OK) goto cleanup;
-            if (t->type == CSS_TOKEN_EOF) { error = CSS_INVALID; goto cleanup; }
+            t = parserutils_vector_iterate(value_tokens, token_ctx);
+            if (t == NULL) { error = CSS_INVALID; goto cleanup; }
             if (t->type != CSS_TOKEN_S) break;
         }
 
         int parens = 1;
         while (1) {
-            if (t->type == CSS_TOKEN_EOF) { error = CSS_INVALID; goto cleanup; }
+            if (t == NULL) { error = CSS_INVALID; goto cleanup; }
 
-            if (t->type == CSS_TOKEN_CHAR && t->data.len == 1) {
-                if (t->data.data[0] == '(') parens++;
-                if (t->data.data[0] == ')') parens--;
+            if (css__token_is_char(t, '(')) {
+                parens++;
+            } else if (css__token_is_char(t, ')')) {
+                parens--;
             } else if (t->type == CSS_TOKEN_FUNCTION) {
                 parens++;
             }
 
             if (parens == 0) break;
 
-            if (t->type < CSS_TOKEN_LAST_INTERN && t->data.data != NULL) {
-                lerr = lwc_intern_string((char *)t->data.data, t->data.len, &t->idata);
-                if (lerr != lwc_error_ok) { error = css_error_from_lwc_error(lerr); goto cleanup; }
-            } else {
-                t->idata = NULL;
-            }
-
-            perr = parserutils_vector_append(fallback_tokens, (css_token *)t);
-            if (perr != PARSERUTILS_OK) {
-                if (t->idata != NULL) lwc_string_unref(t->idata);
-                error = css_error_from_parserutils_error(perr); goto cleanup;
-            }
-
-            error = css__lexer_get_token(lexer, &t);
+            error = css__tokens_append_ref(fallback_tokens, t);
             if (error != CSS_OK) goto cleanup;
+
+            t = parserutils_vector_iterate(value_tokens, token_ctx);
         }
-    } else if (t->type == CSS_TOKEN_CHAR && t->data.len == 1 && t->data.data[0] == ')') {
+    } else if (css__token_is_char(t, ')')) {
         has_fallback = false;
     } else {
         CSS_LOG(DEBUG, "var() missing closing paren");
         error = CSS_INVALID; goto cleanup;
     }
 
-    lwc_string *resolved_val = css__variables_ctx_get(var_ctx, var_name);
+    resolved_val = css__variables_ctx_get_parsed(var_ctx, var_name);
 
     if (resolved_val != NULL) {
         size_t initial_len = 0;
+        uint32_t var_index;
         parserutils_vector_get_length(out_tokens, &initial_len);
 
-        error = css__resolve_tokens(resolved_val, var_ctx, out_tokens, depth + 1);
+        error = css__variables_ctx_ensure_cycles(var_ctx);
+        if (error != CSS_OK)
+            goto cleanup;
+
+        if (css__variables_ctx_find_name(var_ctx, var_name, &var_index) &&
+                var_ctx->entries[var_index].cyclic) {
+            CSS_LOG(DEBUG, "var() reference to cyclic custom property '%.*s'",
+                (int)lwc_string_length(var_name), lwc_string_data(var_name));
+            error = CSS_INVALID;
+        } else {
+            error = css__resolve_token_vector(resolved_val->tokens, var_ctx,
+                out_tokens, depth + 1);
+        }
 
         if (error != CSS_OK) {
             /* If resolving failed (e.g., due to a cycle), rollback the tokens we appended */
@@ -286,20 +605,20 @@ static css_error css__handle_var_function(
 
     if (error != CSS_OK) {
         if (has_fallback) {
-            lwc_string *fallback_value = NULL;
             size_t initial_len = 0;
+
+            if (error != CSS_INVALID)
+                goto cleanup;
 
             parserutils_vector_get_length(out_tokens, &initial_len);
 
-            error = css__tokens_to_string(fallback_tokens, &fallback_value);
-            if (error == CSS_OK) {
-                error = css__resolve_tokens(
-                    fallback_value, var_ctx, out_tokens, depth + 1);
-                lwc_string_unref(fallback_value);
-            }
+            error = css__resolve_token_vector(
+                fallback_tokens, var_ctx, out_tokens, depth + 1);
 
-            if (error != CSS_OK)
+            if (error != CSS_OK) {
                 css__tokens_truncate(out_tokens, initial_len);
+                goto cleanup;
+            }
         } else {
             goto cleanup;
         }
@@ -308,96 +627,58 @@ static css_error css__handle_var_function(
     error = CSS_OK;
 cleanup:
     if (var_name != NULL) lwc_string_unref(var_name);
-    if (fallback_tokens != NULL) {
-        int32_t ctx = 0;
-        const css_token *tok;
-        while ((tok = parserutils_vector_iterate(fallback_tokens, &ctx)) != NULL) {
-            if (tok->idata != NULL) lwc_string_unref(tok->idata);
-        }
-        parserutils_vector_destroy(fallback_tokens);
-    }
+    css__tokens_destroy(fallback_tokens);
     return error;
 }
 
-static css_error css__resolve_tokens(
-    lwc_string *value,
-    const css_var_context *var_ctx,
+static css_error css__resolve_token_vector(
+    const parserutils_vector *value_tokens,
+    css_var_context *var_ctx,
     parserutils_vector *out_tokens,
     int depth)
 {
-    parserutils_inputstream *input = NULL;
-    css_lexer *lexer = NULL;
     css_error error = CSS_OK;
-    parserutils_error perr;
+    int32_t token_ctx = 0;
+    const css_token *token;
 
     if (depth > CSS_VAR_MAX_DEPTH) return CSS_INVALID;
 
-    perr = parserutils_inputstream_create("UTF-8", 0, NULL, &input);
-    if (perr != PARSERUTILS_OK) { return css_error_from_parserutils_error(perr); }
-
-    const char *data = lwc_string_data(value);
-    size_t len = lwc_string_length(value);
-    perr = parserutils_inputstream_append(input, (const uint8_t *)data, len);
-    if (perr != PARSERUTILS_OK) { error = css_error_from_parserutils_error(perr); goto cleanup; }
-    
-    perr = parserutils_inputstream_append(input, NULL, 0);
-    if (perr != PARSERUTILS_OK) { error = css_error_from_parserutils_error(perr); goto cleanup; }
-
-    error = css__lexer_create(input, &lexer);
-    if (error != CSS_OK) goto cleanup;
-
-    while (1) {
-        css_token *token = NULL;
-        error = css__lexer_get_token(lexer, &token);
-        if (error != CSS_OK) goto cleanup;
-
-        if (token->type == CSS_TOKEN_EOF) break;
-
-        if (token->type == CSS_TOKEN_FUNCTION) {
-            bool is_var = false;
-            lwc_string *func_name = NULL;
-            if (token->data.data != NULL) {
-                lwc_error lerr = lwc_intern_string((char *)token->data.data, token->data.len, &func_name);
-                if (lerr == lwc_error_ok) {
-                    if (lwc_string_length(func_name) == 3 &&
-                        strncasecmp(lwc_string_data(func_name), "var", 3) == 0) {
-                        is_var = true;
-                    }
-                    lwc_string_unref(func_name);
-                }
-            }
-
-            if (is_var) {
-                error = css__handle_var_function(lexer, var_ctx, out_tokens, depth);
-                if (error != CSS_OK) goto cleanup;
-                continue;
-            }
-        }
-
-        if (token->type < CSS_TOKEN_LAST_INTERN && token->data.data != NULL) {
-            lwc_error lerr = lwc_intern_string((char *) token->data.data, token->data.len, &token->idata);
-            if (lerr != lwc_error_ok) { error = css_error_from_lwc_error(lerr); goto cleanup; }
-        } else {
-            token->idata = NULL;
+    while ((token = parserutils_vector_iterate(value_tokens, &token_ctx)) != NULL) {
+        if (css__is_var_function_token(token)) {
+            error = css__handle_var_function(value_tokens, &token_ctx,
+                var_ctx, out_tokens, depth);
+            if (error != CSS_OK) return error;
+            continue;
         }
 
         size_t vec_len = 0;
         parserutils_vector_get_length(out_tokens, &vec_len);
         if (token->type == CSS_TOKEN_S && vec_len == 0) {
-            if (token->idata != NULL) lwc_string_unref(token->idata);
             continue;
         }
 
-        perr = parserutils_vector_append(out_tokens, (css_token *)token);
-        if (perr != PARSERUTILS_OK) {
-            if (token->idata != NULL) lwc_string_unref(token->idata);
-            error = css_error_from_parserutils_error(perr); goto cleanup;
-        }
+        error = css__tokens_append_ref(out_tokens, token);
+        if (error != CSS_OK) return error;
     }
 
-cleanup:
-    if (lexer != NULL) css__lexer_destroy(lexer);
-    if (input != NULL) parserutils_inputstream_destroy(input);
+    return CSS_OK;
+}
+
+static css_error css__resolve_tokens(
+    lwc_string *value,
+    css_var_context *var_ctx,
+    parserutils_vector *out_tokens,
+    int depth)
+{
+    parserutils_vector *tokens = NULL;
+    css_error error;
+
+    error = css__tokenise_value(value, &tokens, NULL);
+    if (error == CSS_OK)
+        error = css__resolve_token_vector(tokens, var_ctx, out_tokens, depth);
+
+    css__tokens_destroy(tokens);
+
     return error;
 }
 
@@ -407,6 +688,7 @@ css_error css__variables_ctx_create(css_var_context **out)
     if (ctx == NULL)
         return CSS_NOMEM;
 
+    ctx->cycles_valid = true;
     *out = ctx;
     return CSS_OK;
 }
@@ -435,7 +717,8 @@ static css_error css__variables_ctx_clone_common(
 
         for (uint32_t i = 0; i < src->count; i++) {
             ctx->entries[i].name = lwc_string_ref(src->entries[i].name);
-            ctx->entries[i].value = lwc_string_ref(src->entries[i].value);
+            ctx->entries[i].value = css__var_value_ref(src->entries[i].value);
+            ctx->entries[i].cyclic = false;
             if (inherited) {
                 ctx->entries[i].specificity = 0;
                 ctx->entries[i].origin = CSS_ORIGIN_UA;
@@ -448,6 +731,8 @@ static css_error css__variables_ctx_clone_common(
                 ctx->entries[i].cascaded = src->entries[i].cascaded;
             }
         }
+
+        ctx->cycles_valid = false;
     }
 
     *out = ctx;
@@ -473,7 +758,7 @@ void css__variables_ctx_destroy(css_var_context *ctx)
 
     for (uint32_t i = 0; i < ctx->count; i++) {
         lwc_string_unref(ctx->entries[i].name);
-        lwc_string_unref(ctx->entries[i].value);
+        css__var_value_unref(ctx->entries[i].value);
     }
 
     free(ctx->entries);
@@ -483,16 +768,25 @@ void css__variables_ctx_destroy(css_var_context *ctx)
 css_error css__variables_ctx_set(css_var_context *ctx,
     lwc_string *name, lwc_string *value)
 {
+    css_var_value *parsed_value;
+    css_error error;
+
+    error = css__var_value_create(value, &parsed_value);
+    if (error != CSS_OK)
+        return error;
+
     /* Check for existing entry (pointer comparison — interned strings) */
     for (uint32_t i = 0; i < ctx->count; i++) {
         if (ctx->entries[i].name == name) {
             /* Replace value */
-            lwc_string_unref(ctx->entries[i].value);
-            ctx->entries[i].value = lwc_string_ref(value);
+            css__var_value_unref(ctx->entries[i].value);
+            ctx->entries[i].value = parsed_value;
             ctx->entries[i].origin = CSS_ORIGIN_AUTHOR;
             ctx->entries[i].specificity = 0;
             ctx->entries[i].important = false;
             ctx->entries[i].cascaded = true;
+            ctx->entries[i].cyclic = false;
+            ctx->cycles_valid = false;
             return CSS_OK;
         }
     }
@@ -504,19 +798,23 @@ css_error css__variables_ctx_set(css_var_context *ctx,
             : ctx->capacity * 2;
         css_var_entry *new_entries = realloc(ctx->entries,
             new_cap * sizeof(css_var_entry));
-        if (new_entries == NULL)
+        if (new_entries == NULL) {
+            css__var_value_unref(parsed_value);
             return CSS_NOMEM;
+        }
         ctx->entries = new_entries;
         ctx->capacity = new_cap;
     }
 
     ctx->entries[ctx->count].name = lwc_string_ref(name);
-    ctx->entries[ctx->count].value = lwc_string_ref(value);
+    ctx->entries[ctx->count].value = parsed_value;
     ctx->entries[ctx->count].origin = CSS_ORIGIN_AUTHOR;
     ctx->entries[ctx->count].specificity = 0;
     ctx->entries[ctx->count].important = false;
     ctx->entries[ctx->count].cascaded = true;
+    ctx->entries[ctx->count].cyclic = false;
     ctx->count++;
+    ctx->cycles_valid = false;
 
     return CSS_OK;
 }
@@ -573,14 +871,23 @@ css_error css__variables_ctx_cascade(
     uint32_t specificity,
     bool important)
 {
+    css_var_value *parsed_value = NULL;
+    css_error error;
+
     for (uint32_t i = 0; i < ctx->count; i++) {
         if (ctx->entries[i].name == name) {
             if (css__variable_decl_outranks(&ctx->entries[i],
                     origin, specificity, important)) {
-                lwc_string_unref(ctx->entries[i].value);
-                ctx->entries[i].value = lwc_string_ref(value);
+                error = css__var_value_create(value, &parsed_value);
+                if (error != CSS_OK)
+                    return error;
+
+                css__var_value_unref(ctx->entries[i].value);
+                ctx->entries[i].value = parsed_value;
                 css__variables_ctx_update_metadata(&ctx->entries[i],
                     origin, specificity, important);
+                ctx->entries[i].cyclic = false;
+                ctx->cycles_valid = false;
             }
             return CSS_OK;
         }
@@ -592,17 +899,24 @@ css_error css__variables_ctx_cascade(
             : ctx->capacity * 2;
         css_var_entry *new_entries = realloc(ctx->entries,
             new_cap * sizeof(css_var_entry));
-        if (new_entries == NULL)
+        if (new_entries == NULL) {
             return CSS_NOMEM;
+        }
         ctx->entries = new_entries;
         ctx->capacity = new_cap;
     }
 
+    error = css__var_value_create(value, &parsed_value);
+    if (error != CSS_OK)
+        return error;
+
     ctx->entries[ctx->count].name = lwc_string_ref(name);
-    ctx->entries[ctx->count].value = lwc_string_ref(value);
+    ctx->entries[ctx->count].value = parsed_value;
     css__variables_ctx_update_metadata(&ctx->entries[ctx->count],
         origin, specificity, important);
+    ctx->entries[ctx->count].cyclic = false;
     ctx->count++;
+    ctx->cycles_valid = false;
 
     return CSS_OK;
 }
@@ -615,7 +929,7 @@ lwc_string *css__variables_ctx_get(const css_var_context *ctx,
 
     for (uint32_t i = 0; i < ctx->count; i++) {
         if (ctx->entries[i].name == name)
-            return ctx->entries[i].value;
+            return ctx->entries[i].value->raw;
     }
 
     return NULL;
@@ -731,7 +1045,7 @@ cleanup:
 css_error css__resolve_var_property(
     lwc_string *prop_name,
     lwc_string *raw_value,
-    const css_var_context *var_ctx,
+    css_var_context *var_ctx,
     css_stylesheet *sheet,
     bool important,
     css_select_state *state)
