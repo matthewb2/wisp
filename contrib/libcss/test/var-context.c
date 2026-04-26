@@ -81,20 +81,36 @@ int main(void)
     assert(css__variables_ctx_get(clone, name1) == val3);   /* clone unchanged */
     printf("Test 8 (clone independence): PASS\n");
 
-    /* Test 9: Clone NULL source creates empty */
+    /* Test 9: Inherited clone keeps parent values as an overlay */
+    css_var_context *inherited = NULL;
+    error = css__variables_ctx_clone_inherited(ctx, &inherited);
+    assert(error == CSS_OK);
+    assert(inherited != NULL);
+    assert(inherited->count == 0);
+    assert(css__variables_ctx_get(inherited, name1) == val1);
+    assert(css__variables_ctx_get(inherited, name2) == val2);
+    error = css__variables_ctx_set(inherited, name2, val3);
+    assert(error == CSS_OK);
+    assert(inherited->count == 1);
+    assert(css__variables_ctx_get(inherited, name2) == val3);
+    assert(css__variables_ctx_get(ctx, name2) == val2);
+    printf("Test 9 (inherited overlay): PASS\n");
+
+    /* Test 10: Clone NULL source creates empty */
     css_var_context *empty_clone = NULL;
     error = css__variables_ctx_clone(NULL, &empty_clone);
     assert(error == CSS_OK);
     assert(empty_clone != NULL);
     assert(empty_clone->count == 0);
-    printf("Test 9 (clone NULL): PASS\n");
+    printf("Test 10 (clone NULL): PASS\n");
 
-    /* Test 10: Destroy (should not crash/leak) */
+    /* Test 11: Destroy (should not crash/leak) */
+    css__variables_ctx_destroy(inherited);
     css__variables_ctx_destroy(ctx);
     css__variables_ctx_destroy(clone);
     css__variables_ctx_destroy(empty_clone);
     css__variables_ctx_destroy(NULL);  /* safe no-op */
-    printf("Test 10 (destroy): PASS\n");
+    printf("Test 11 (destroy): PASS\n");
 
     /* Clean up interned strings */
     lwc_string_unref(name1);

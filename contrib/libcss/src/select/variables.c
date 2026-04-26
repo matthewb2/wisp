@@ -349,6 +349,35 @@ static void css__var_value_unref(css_var_value *value)
     free(value);
 }
 
+static css_var_context *css__variables_ctx_ref(css_var_context *ctx)
+{
+    if (ctx != NULL)
+        ctx->refcnt++;
+
+    return ctx;
+}
+
+static void css__variables_ctx_clear_cycle_cache(css_var_context *ctx)
+{
+    if (ctx == NULL)
+        return;
+
+    for (uint32_t i = 0; i < ctx->cyclic_count; i++)
+        lwc_string_unref(ctx->cyclic_names[i]);
+
+    free(ctx->cyclic_names);
+    ctx->cyclic_names = NULL;
+    ctx->cyclic_count = 0;
+    ctx->cyclic_capacity = 0;
+}
+
+static void css__variables_ctx_invalidate_cycles(css_var_context *ctx)
+{
+    css__variables_ctx_clear_cycle_cache(ctx);
+    if (ctx != NULL)
+        ctx->cycles_valid = false;
+}
+
 static bool css__variables_ctx_find_name(
     const css_var_context *ctx,
     lwc_string *name,
@@ -374,10 +403,108 @@ static css_var_value *css__variables_ctx_get_parsed(
 {
     uint32_t index;
 
-    if (css__variables_ctx_find_name(ctx, name, &index) == false)
+    if (ctx == NULL)
         return NULL;
 
+    if (css__variables_ctx_find_name(ctx, name, &index) == false)
+        return ctx->parent != NULL
+            ? css__variables_ctx_get_parsed(ctx->parent, name)
+            : NULL;
+
     return ctx->entries[index].value;
+}
+
+typedef struct css_var_binding {
+    const css_var_entry *entry;
+} css_var_binding;
+
+typedef struct css_var_binding_list {
+    css_var_binding *items;
+    uint32_t count;
+    uint32_t capacity;
+} css_var_binding_list;
+
+static bool css__var_binding_list_find_name(
+    const css_var_binding_list *list,
+    lwc_string *name,
+    uint32_t *index)
+{
+    for (uint32_t i = 0; i < list->count; i++) {
+        if (list->items[i].entry->name == name) {
+            if (index != NULL)
+                *index = i;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static css_error css__var_binding_list_append(
+    css_var_binding_list *list,
+    const css_var_entry *entry)
+{
+    css_var_binding *new_items;
+    uint32_t new_cap;
+
+    if (css__var_binding_list_find_name(list, entry->name, NULL))
+        return CSS_OK;
+
+    if (list->count >= list->capacity) {
+        new_cap = list->capacity == 0 ? 8 : list->capacity * 2;
+        new_items = realloc(list->items, new_cap * sizeof(css_var_binding));
+        if (new_items == NULL)
+            return CSS_NOMEM;
+
+        list->items = new_items;
+        list->capacity = new_cap;
+    }
+
+    list->items[list->count++].entry = entry;
+    return CSS_OK;
+}
+
+static css_error css__variables_ctx_collect_effective(
+    const css_var_context *ctx,
+    css_var_binding_list *list)
+{
+    for (; ctx != NULL; ctx = ctx->parent) {
+        for (uint32_t i = 0; i < ctx->count; i++) {
+            css_error error = css__var_binding_list_append(
+                list, &ctx->entries[i]);
+            if (error != CSS_OK)
+                return error;
+        }
+    }
+
+    return CSS_OK;
+}
+
+static css_error css__variables_ctx_mark_cyclic(
+    css_var_context *ctx,
+    lwc_string *name)
+{
+    lwc_string **new_names;
+    uint32_t new_cap;
+
+    for (uint32_t i = 0; i < ctx->cyclic_count; i++) {
+        if (ctx->cyclic_names[i] == name)
+            return CSS_OK;
+    }
+
+    if (ctx->cyclic_count >= ctx->cyclic_capacity) {
+        new_cap = ctx->cyclic_capacity == 0 ? 4 : ctx->cyclic_capacity * 2;
+        new_names = realloc(ctx->cyclic_names,
+            new_cap * sizeof(lwc_string *));
+        if (new_names == NULL)
+            return CSS_NOMEM;
+
+        ctx->cyclic_names = new_names;
+        ctx->cyclic_capacity = new_cap;
+    }
+
+    ctx->cyclic_names[ctx->cyclic_count++] = lwc_string_ref(name);
+    return CSS_OK;
 }
 
 enum {
@@ -388,6 +515,7 @@ enum {
 
 typedef struct css_var_cycle_search {
     css_var_context *ctx;
+    const css_var_binding_list *bindings;
     uint8_t *state;
     uint32_t *stack;
     uint32_t stack_len;
@@ -397,7 +525,7 @@ static css_error css__variables_ctx_visit_cycles(
     css_var_cycle_search *search,
     uint32_t index)
 {
-    css_var_entry *entry = &search->ctx->entries[index];
+    const css_var_entry *entry = search->bindings->items[index].entry;
 
     search->state[index] = CSS_VAR_CYCLE_VISITING;
     search->stack[search->stack_len++] = index;
@@ -405,7 +533,7 @@ static css_error css__variables_ctx_visit_cycles(
     for (uint32_t i = 0; i < entry->value->ref_count; i++) {
         uint32_t dep;
 
-        if (css__variables_ctx_find_name(search->ctx,
+        if (css__var_binding_list_find_name(search->bindings,
                 entry->value->refs[i], &dep) == false) {
             continue;
         }
@@ -416,8 +544,13 @@ static css_error css__variables_ctx_visit_cycles(
             for (uint32_t j = 0; j < search->stack_len; j++) {
                 if (search->stack[j] == dep)
                     mark = true;
-                if (mark)
-                    search->ctx->entries[search->stack[j]].cyclic = true;
+                if (mark) {
+                    css_error error = css__variables_ctx_mark_cyclic(
+                        search->ctx,
+                        search->bindings->items[search->stack[j]].entry->name);
+                    if (error != CSS_OK)
+                        return error;
+                }
             }
         } else if (search->state[dep] == CSS_VAR_CYCLE_UNVISITED) {
             css_error error = css__variables_ctx_visit_cycles(search, dep);
@@ -434,31 +567,37 @@ static css_error css__variables_ctx_visit_cycles(
 
 static css_error css__variables_ctx_ensure_cycles(css_var_context *ctx)
 {
+    css_var_binding_list bindings;
     css_var_cycle_search search;
     css_error error = CSS_OK;
 
     if (ctx == NULL || ctx->cycles_valid)
         return CSS_OK;
 
-    if (ctx->count == 0) {
-        ctx->cycles_valid = true;
-        return CSS_OK;
-    }
-
+    memset(&bindings, 0, sizeof(bindings));
     memset(&search, 0, sizeof(search));
     search.ctx = ctx;
+    search.bindings = &bindings;
 
-    search.state = calloc(ctx->count, sizeof(uint8_t));
-    search.stack = calloc(ctx->count, sizeof(uint32_t));
+    css__variables_ctx_clear_cycle_cache(ctx);
+
+    error = css__variables_ctx_collect_effective(ctx, &bindings);
+    if (error != CSS_OK)
+        goto cleanup;
+
+    if (bindings.count == 0) {
+        ctx->cycles_valid = true;
+        goto cleanup;
+    }
+
+    search.state = calloc(bindings.count, sizeof(uint8_t));
+    search.stack = calloc(bindings.count, sizeof(uint32_t));
     if (search.state == NULL || search.stack == NULL) {
         error = CSS_NOMEM;
         goto cleanup;
     }
 
-    for (uint32_t i = 0; i < ctx->count; i++)
-        ctx->entries[i].cyclic = false;
-
-    for (uint32_t i = 0; i < ctx->count; i++) {
+    for (uint32_t i = 0; i < bindings.count; i++) {
         if (search.state[i] == CSS_VAR_CYCLE_UNVISITED) {
             error = css__variables_ctx_visit_cycles(&search, i);
             if (error != CSS_OK)
@@ -471,8 +610,38 @@ static css_error css__variables_ctx_ensure_cycles(css_var_context *ctx)
 cleanup:
     free(search.state);
     free(search.stack);
+    free(bindings.items);
 
     return error;
+}
+
+static css_error css__variables_ctx_name_is_cyclic(
+    css_var_context *ctx,
+    lwc_string *name,
+    bool *cyclic)
+{
+    css_error error;
+
+    *cyclic = false;
+
+    if (ctx == NULL)
+        return CSS_OK;
+
+    if (ctx->count == 0 && ctx->parent != NULL)
+        return css__variables_ctx_name_is_cyclic(ctx->parent, name, cyclic);
+
+    error = css__variables_ctx_ensure_cycles(ctx);
+    if (error != CSS_OK)
+        return error;
+
+    for (uint32_t i = 0; i < ctx->cyclic_count; i++) {
+        if (ctx->cyclic_names[i] == name) {
+            *cyclic = true;
+            break;
+        }
+    }
+
+    return CSS_OK;
 }
 
 static bool css__token_is_char(const css_token *token, char c)
@@ -578,15 +747,14 @@ static css_error css__handle_var_function(
 
     if (resolved_val != NULL) {
         size_t initial_len = 0;
-        uint32_t var_index;
+        bool cyclic = false;
         parserutils_vector_get_length(out_tokens, &initial_len);
 
-        error = css__variables_ctx_ensure_cycles(var_ctx);
+        error = css__variables_ctx_name_is_cyclic(var_ctx, var_name, &cyclic);
         if (error != CSS_OK)
             goto cleanup;
 
-        if (css__variables_ctx_find_name(var_ctx, var_name, &var_index) &&
-                var_ctx->entries[var_index].cyclic) {
+        if (cyclic) {
             CSS_LOG(DEBUG, "var() reference to cyclic custom property '%.*s'",
                 (int)lwc_string_length(var_name), lwc_string_data(var_name));
             error = CSS_INVALID;
@@ -688,15 +856,68 @@ css_error css__variables_ctx_create(css_var_context **out)
     if (ctx == NULL)
         return CSS_NOMEM;
 
+    ctx->refcnt = 1;
     ctx->cycles_valid = true;
     *out = ctx;
     return CSS_OK;
 }
 
-static css_error css__variables_ctx_clone_common(
+css_error css__variables_ctx_clone(
     const css_var_context *src,
-    css_var_context **out,
-    bool inherited)
+    css_var_context **out)
+{
+    css_var_binding_list bindings;
+    css_var_context *ctx;
+    css_error error;
+
+    memset(&bindings, 0, sizeof(bindings));
+
+    error = css__variables_ctx_create(&ctx);
+    if (error != CSS_OK)
+        return error;
+
+    if (src != NULL) {
+        error = css__variables_ctx_collect_effective(src, &bindings);
+        if (error != CSS_OK) {
+            free(bindings.items);
+            css__variables_ctx_destroy(ctx);
+            return error;
+        }
+    }
+
+    if (bindings.count > 0) {
+        ctx->entries = malloc(bindings.count * sizeof(css_var_entry));
+        if (ctx->entries == NULL) {
+            free(bindings.items);
+            css__variables_ctx_destroy(ctx);
+            return CSS_NOMEM;
+        }
+
+        ctx->capacity = bindings.count;
+        ctx->count = bindings.count;
+
+        for (uint32_t i = 0; i < bindings.count; i++) {
+            const css_var_entry *entry = bindings.items[i].entry;
+
+            ctx->entries[i].name = lwc_string_ref(entry->name);
+            ctx->entries[i].value = css__var_value_ref(entry->value);
+            ctx->entries[i].specificity = entry->specificity;
+            ctx->entries[i].origin = entry->origin;
+            ctx->entries[i].important = entry->important;
+            ctx->entries[i].cascaded = entry->cascaded;
+        }
+
+        ctx->cycles_valid = false;
+    }
+
+    free(bindings.items);
+    *out = ctx;
+    return CSS_OK;
+}
+
+css_error css__variables_ctx_clone_inherited(
+    css_var_context *src,
+    css_var_context **out)
 {
     css_var_context *ctx;
     css_error error;
@@ -705,50 +926,10 @@ static css_error css__variables_ctx_clone_common(
     if (error != CSS_OK)
         return error;
 
-    if (src != NULL && src->count > 0) {
-        ctx->entries = malloc(src->count * sizeof(css_var_entry));
-        if (ctx->entries == NULL) {
-            free(ctx);
-            return CSS_NOMEM;
-        }
-
-        ctx->capacity = src->count;
-        ctx->count = src->count;
-
-        for (uint32_t i = 0; i < src->count; i++) {
-            ctx->entries[i].name = lwc_string_ref(src->entries[i].name);
-            ctx->entries[i].value = css__var_value_ref(src->entries[i].value);
-            ctx->entries[i].cyclic = false;
-            if (inherited) {
-                ctx->entries[i].specificity = 0;
-                ctx->entries[i].origin = CSS_ORIGIN_UA;
-                ctx->entries[i].important = false;
-                ctx->entries[i].cascaded = false;
-            } else {
-                ctx->entries[i].specificity = src->entries[i].specificity;
-                ctx->entries[i].origin = src->entries[i].origin;
-                ctx->entries[i].important = src->entries[i].important;
-                ctx->entries[i].cascaded = src->entries[i].cascaded;
-            }
-        }
-
-        ctx->cycles_valid = false;
-    }
+    ctx->parent = css__variables_ctx_ref(src);
 
     *out = ctx;
     return CSS_OK;
-}
-
-css_error css__variables_ctx_clone(const css_var_context *src, css_var_context **out)
-{
-    return css__variables_ctx_clone_common(src, out, false);
-}
-
-css_error css__variables_ctx_clone_inherited(
-    const css_var_context *src,
-    css_var_context **out)
-{
-    return css__variables_ctx_clone_common(src, out, true);
 }
 
 void css__variables_ctx_destroy(css_var_context *ctx)
@@ -756,11 +937,16 @@ void css__variables_ctx_destroy(css_var_context *ctx)
     if (ctx == NULL)
         return;
 
+    if (--ctx->refcnt > 0)
+        return;
+
     for (uint32_t i = 0; i < ctx->count; i++) {
         lwc_string_unref(ctx->entries[i].name);
         css__var_value_unref(ctx->entries[i].value);
     }
 
+    css__variables_ctx_clear_cycle_cache(ctx);
+    css__variables_ctx_destroy(ctx->parent);
     free(ctx->entries);
     free(ctx);
 }
@@ -785,8 +971,7 @@ css_error css__variables_ctx_set(css_var_context *ctx,
             ctx->entries[i].specificity = 0;
             ctx->entries[i].important = false;
             ctx->entries[i].cascaded = true;
-            ctx->entries[i].cyclic = false;
-            ctx->cycles_valid = false;
+            css__variables_ctx_invalidate_cycles(ctx);
             return CSS_OK;
         }
     }
@@ -812,9 +997,8 @@ css_error css__variables_ctx_set(css_var_context *ctx,
     ctx->entries[ctx->count].specificity = 0;
     ctx->entries[ctx->count].important = false;
     ctx->entries[ctx->count].cascaded = true;
-    ctx->entries[ctx->count].cyclic = false;
     ctx->count++;
-    ctx->cycles_valid = false;
+    css__variables_ctx_invalidate_cycles(ctx);
 
     return CSS_OK;
 }
@@ -886,8 +1070,7 @@ css_error css__variables_ctx_cascade(
                 ctx->entries[i].value = parsed_value;
                 css__variables_ctx_update_metadata(&ctx->entries[i],
                     origin, specificity, important);
-                ctx->entries[i].cyclic = false;
-                ctx->cycles_valid = false;
+                css__variables_ctx_invalidate_cycles(ctx);
             }
             return CSS_OK;
         }
@@ -914,9 +1097,8 @@ css_error css__variables_ctx_cascade(
     ctx->entries[ctx->count].value = parsed_value;
     css__variables_ctx_update_metadata(&ctx->entries[ctx->count],
         origin, specificity, important);
-    ctx->entries[ctx->count].cyclic = false;
     ctx->count++;
-    ctx->cycles_valid = false;
+    css__variables_ctx_invalidate_cycles(ctx);
 
     return CSS_OK;
 }
@@ -932,7 +1114,7 @@ lwc_string *css__variables_ctx_get(const css_var_context *ctx,
             return ctx->entries[i].value->raw;
     }
 
-    return NULL;
+    return css__variables_ctx_get(ctx->parent, name);
 }
 
 static css_error css__cascade_resolved_style(

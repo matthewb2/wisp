@@ -951,6 +951,31 @@ static void test_self_reference_in_fallback_is_cycle(void)
     destroy_style_case(&ctx);
 }
 
+static void test_inherited_overlay_cycle_is_invalid(void)
+{
+    style_case ctx;
+    const css_computed_style *style;
+
+    setup_style_case(&ctx,
+        ":root { --b: var(--a); }"
+        "div { --a: var(--b); width: var(--a, 35px); }");
+
+    assert(lwc_intern_string("html", 4, &ctx.parent_name) == lwc_error_ok);
+    ctx.parent_node.name = ctx.parent_name;
+    ctx.parent_node.parent = NULL;
+    ctx.parent_node.libcss_node_data = NULL;
+
+    select_style_for_node(&ctx, &ctx.parent_node, NULL, &ctx.parent_results);
+
+    ctx.node.parent = &ctx.parent_node;
+    style = select_style_for_node(&ctx, &ctx.node, NULL, &ctx.results);
+
+    expect_length_px("inherited overlay cycle fallback width", style,
+        css_computed_width, CSS_WIDTH_SET, 35);
+
+    destroy_style_case(&ctx);
+}
+
 int main(void)
 {
     test_same_rule_custom_property_after_use();
@@ -970,6 +995,7 @@ int main(void)
     test_custom_property_fallback_cycle_is_invalid();
     test_noncyclic_var_can_fallback_from_cycle();
     test_self_reference_in_fallback_is_cycle();
+    test_inherited_overlay_cycle_is_invalid();
 
     printf("PASS\n");
     return 0;

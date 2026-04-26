@@ -24,7 +24,6 @@ typedef struct css_var_entry {
     css_origin origin;
     bool important;
     bool cascaded;      /* false when this is only an inherited value */
-    bool cyclic;
 } css_var_entry;
 
 /**
@@ -33,9 +32,14 @@ typedef struct css_var_entry {
  * comparison is faster than a hash map at these sizes.
  */
 typedef struct css_var_context {
+    uint32_t refcnt;
+    struct css_var_context *parent;
     css_var_entry *entries;
     uint32_t count;
     uint32_t capacity;
+    lwc_string **cyclic_names;
+    uint32_t cyclic_count;
+    uint32_t cyclic_capacity;
     bool cycles_valid;
 } css_var_context;
 
@@ -55,7 +59,7 @@ css_error css__variables_ctx_clone(const css_var_context *src, css_var_context *
  * lookup, but cascade metadata is reset so any child declaration wins.
  */
 css_error css__variables_ctx_clone_inherited(
-    const css_var_context *src,
+    css_var_context *src,
     css_var_context **out);
 
 /**
