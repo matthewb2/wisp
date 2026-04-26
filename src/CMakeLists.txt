@@ -61,6 +61,16 @@ if(WIN32)
     include_directories(${LIBREGEX_INCLUDE_DIRS})
 endif()
 
+function(wisp_append_pkg_libraries out_var package)
+    if(WIN32 AND DEFINED ${package}_STATIC_LIBRARIES AND NOT "${${package}_STATIC_LIBRARIES}" STREQUAL "")
+        list(APPEND ${out_var} ${${package}_STATIC_LIBRARIES})
+    else()
+        list(APPEND ${out_var} ${${package}_LIBRARIES})
+    endif()
+
+    set(${out_var} "${${out_var}}" PARENT_SCOPE)
+endfunction()
+
 string(REPLACE "." ";" LIBSSL_VERSION_STRING ${LIBSSL_VERSION})
 
 list(GET LIBSSL_VERSION_STRING 0 LIBSSL_VERSION_MAJOR)
@@ -244,14 +254,38 @@ if(WISP_BUILD_XXD)
 	)
 endif()
 
-set(WISP_COMMON_LIBS css dom nsutils parserutils nsgif nsbmp svgtiny ${LIBCRYPTO_LIBRARIES} ${LIBPNG_LIBRARIES} ${LIBCURL_LIBRARIES} ${LIBJPEG_LIBRARIES} ${LIBWEBP_LIBRARIES} ${LIBAVIF_LIBRARIES} ${LIBPSL_LIBRARIES} ${ZLIB_LIBRARIES} ${LIBSSL_LIBRARIES} ${LIBUTF8PROC_LIBRARIES} ${LIBREGEX_LIBRARIES})
+set(WISP_COMMON_LIBS css dom nsutils parserutils nsgif nsbmp svgtiny)
 
+wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBCURL)
+wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBCRYPTO)
+wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBPSL)
+wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBUTF8PROC)
 
+if(WISP_USE_PNG)
+    wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBPNG)
+endif()
+
+if(WISP_USE_JPEG)
+    wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBJPEG)
+endif()
+
+if(WISP_USE_WEBP)
+    wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBWEBP)
+endif()
+
+if(WISP_USE_AVIF)
+    wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBAVIF)
+endif()
+
+wisp_append_pkg_libraries(WISP_COMMON_LIBS ZLIB)
+wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBSSL)
+
+if(LIBXML2_FOUND)
+    wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBXML2)
+endif()
 
 if(WIN32)
-	# Static Windows builds may need codec/system libs that are not propagated cleanly by pkg-config.
-	list(APPEND WISP_COMMON_LIBS aom SvtAv1Enc rav1e dav1d sharpyuv yuv ntdll)
-	list(APPEND WISP_COMMON_LIBS ws2_32)
+    wisp_append_pkg_libraries(WISP_COMMON_LIBS LIBREGEX)
     target_link_options(wisp PUBLIC -static)
 endif()
 

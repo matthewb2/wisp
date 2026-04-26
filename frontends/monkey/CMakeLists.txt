@@ -67,15 +67,19 @@ if(WIN32 AND CMAKE_BUILD_TYPE MATCHES Debug)
         )
     endif()
 
-    add_custom_command(TARGET nsmonkey POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libdom/libdom.dll" "$<TARGET_FILE_DIR:nsmonkey>/"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libnsutils/libnsutils.dll" "$<TARGET_FILE_DIR:nsmonkey>/"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libparserutils/libparserutils.dll" "$<TARGET_FILE_DIR:nsmonkey>/"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libnsbmp/libnsbmp.dll" "$<TARGET_FILE_DIR:nsmonkey>/"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libnsgif/libnsgif.dll" "$<TARGET_FILE_DIR:nsmonkey>/"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libcss/libcss.dll" "$<TARGET_FILE_DIR:nsmonkey>/"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libhubbub/libhubbub.dll" "$<TARGET_FILE_DIR:nsmonkey>/"
-        COMMENT "Copying contrib DLLs next to nsmonkey")
+    foreach(RUNTIME_TARGET dom nsutils parserutils nsbmp nsgif css hubbub)
+        if(TARGET ${RUNTIME_TARGET})
+            get_target_property(RUNTIME_TARGET_TYPE ${RUNTIME_TARGET} TYPE)
+            if(RUNTIME_TARGET_TYPE STREQUAL "SHARED_LIBRARY" OR
+                    RUNTIME_TARGET_TYPE STREQUAL "MODULE_LIBRARY")
+                add_custom_command(TARGET nsmonkey POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "$<TARGET_FILE:${RUNTIME_TARGET}>"
+                            "$<TARGET_FILE_DIR:nsmonkey>/"
+                    COMMENT "Copying ${RUNTIME_TARGET} runtime next to nsmonkey")
+            endif()
+        endif()
+    endforeach()
 endif()
 
 install(TARGETS nsmonkey DESTINATION ${CMAKE_INSTALL_BINDIR})

@@ -53,15 +53,25 @@ function(add_wisp_test name)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SVGTINY_RUNTIME}" "$<TARGET_FILE_DIR:${name}>/"
       )
     endif()
-    add_custom_command(TARGET ${name} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libdom/libdom.dll" "$<TARGET_FILE_DIR:${name}>/"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libnsutils/libnsutils.dll" "$<TARGET_FILE_DIR:${name}>/"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libparserutils/libparserutils.dll" "$<TARGET_FILE_DIR:${name}>/"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libnsbmp/libnsbmp.dll" "$<TARGET_FILE_DIR:${name}>/"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libnsgif/libnsgif.dll" "$<TARGET_FILE_DIR:${name}>/"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libcss/libcss.dll" "$<TARGET_FILE_DIR:${name}>/"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/contrib/libhubbub/libhubbub.dll" "$<TARGET_FILE_DIR:${name}>/"
-    )
+    foreach(RUNTIME_TARGET dom nsutils parserutils nsbmp nsgif css hubbub)
+      if(TARGET ${RUNTIME_TARGET})
+        get_target_property(RUNTIME_TARGET_TYPE ${RUNTIME_TARGET} TYPE)
+        if(RUNTIME_TARGET_TYPE STREQUAL "SHARED_LIBRARY" OR
+            RUNTIME_TARGET_TYPE STREQUAL "MODULE_LIBRARY")
+          add_custom_command(TARGET ${name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "$<TARGET_FILE:${RUNTIME_TARGET}>"
+              "$<TARGET_FILE_DIR:${name}>/"
+          )
+        endif()
+      endif()
+    endforeach()
+  endif()
+endfunction()
+
+function(wisp_test_allow_libcss_stubs name)
+  if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(${name} PRIVATE -Wl,--allow-multiple-definition)
   endif()
 endfunction()
 
@@ -191,6 +201,7 @@ add_wisp_test(layout_flex_test
 )
 # Define TESTING so layout_flex.c can use test stubs
 target_compile_definitions(layout_flex_test PRIVATE TESTING)
+wisp_test_allow_libcss_stubs(layout_flex_test)
 
 
 add_wisp_test(svg_redraw_test
@@ -245,6 +256,7 @@ add_wisp_test(grid_layout_test
 )
 # Define TESTING so layout_grid.c uses test stubs instead of calling layout_minmax_box
 target_compile_definitions(grid_layout_test PRIVATE TESTING)
+wisp_test_allow_libcss_stubs(grid_layout_test)
 
 add_wisp_test(layout_inline_grid_test
   ${CMAKE_SOURCE_DIR}/src/content/handlers/html/layout_grid.c
@@ -252,6 +264,7 @@ add_wisp_test(layout_inline_grid_test
   ${CMAKE_SOURCE_DIR}/src/test/layout_inline_grid_test.c
 )
 target_compile_definitions(layout_inline_grid_test PRIVATE TESTING)
+wisp_test_allow_libcss_stubs(layout_inline_grid_test)
 
 add_wisp_test(grid_construct_test
   ${CMAKE_SOURCE_DIR}/src/content/handlers/html/box_normalise.c
@@ -259,6 +272,7 @@ add_wisp_test(grid_construct_test
   ${CMAKE_SOURCE_DIR}/src/test/log.c
   ${CMAKE_SOURCE_DIR}/src/test/grid_construct_test.c
 )
+wisp_test_allow_libcss_stubs(grid_construct_test)
 # Disable leak detection for grid_construct_test since libdom parsing has internal leaks
 set_property(TEST grid_construct_test PROPERTY ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 

@@ -14,6 +14,7 @@
 
 #include "utils/parserutilserror.h"
 #include "utils/css_utils.h"
+#include "utils/libcss_log.h"
 #include "bytecode/bytecode.h"
 #include "bytecode/opcodes.h"
 #include "select/arena.h"
@@ -2606,11 +2607,9 @@ css_error cascade_style(const css_style *style, css_select_state *state)
             css_error verr = css__stylesheet_string_get(s.sheet, value_idx, &value_str);
 
             if (nerr != CSS_OK || verr != CSS_OK) {
-#ifndef NDEBUG
-                fprintf(stderr,
-                    "VAR_RESOLVE: invalid custom property string index name=%u value=%u count=%u\n",
+                CSS_LOG(DEBUG,
+                    "VAR_RESOLVE: invalid custom property string index name=%u value=%u count=%u",
                     name_idx, value_idx, s.sheet->string_vector_c);
-#endif
                 continue;
             }
 
@@ -2634,11 +2633,9 @@ css_error cascade_style(const css_style *style, css_select_state *state)
             css_error rerr = css__stylesheet_string_get(s.sheet, raw_value_idx, &raw_value_str);
 
             if (perr != CSS_OK || rerr != CSS_OK) {
-#ifndef NDEBUG
-                fprintf(stderr,
-                    "VAR_RESOLVE: invalid deferred string index prop=%u raw=%u count=%u\n",
+                CSS_LOG(DEBUG,
+                    "VAR_RESOLVE: invalid deferred string index prop=%u raw=%u count=%u",
                     prop_name_idx, raw_value_idx, s.sheet->string_vector_c);
-#endif
                 continue;
             }
 
@@ -2657,7 +2654,7 @@ css_error cascade_style(const css_style *style, css_select_state *state)
         }
 
         if (op >= CSS_N_PROPERTIES) {
-            fprintf(stderr, "ERROR: Invalid opcode %d >= CSS_N_PROPERTIES %d!\n", op, CSS_N_PROPERTIES);
+            CSS_LOG(ERROR, "Invalid opcode %d >= CSS_N_PROPERTIES %d", op, CSS_N_PROPERTIES);
         }
 
         error = prop_dispatch[op].cascade(opv, &s, state);

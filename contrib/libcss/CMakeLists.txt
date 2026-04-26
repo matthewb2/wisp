@@ -1,5 +1,6 @@
 add_subdirectory(src/parse/properties/gen_parser)
 option(WISP_VERBOSE_GEN "Enable verbose libcss code generation output" OFF)
+option(LIBCSS_ENABLE_LOGGING "Enable libcss local logging to libcss-log.txt" OFF)
 
 set(LIBCSS_CMAKE_HELPERS ${CMAKE_SOURCE_DIR}/contrib/libcss/build-aux/cmake_helpers.py)
 set(LIBCSS_PROPERTIES_TOML ${CMAKE_SOURCE_DIR}/contrib/libcss/properties.toml)
@@ -249,12 +250,17 @@ add_library(css ${WISP_LIB_TYPE}
 	src/select/unit.c
 	src/utils/utils.c
 	src/utils/errors.c
+	src/utils/log.c
 )
 set_target_properties(css PROPERTIES SOVERSION ${WISP_ABI})
 
 add_dependencies(css libcss_properties libcss_select_gen libcss_propreg_gen gen_parser)
 
 target_link_libraries(css nsutils parserutils)
+
+if(LIBCSS_ENABLE_LOGGING)
+	target_compile_definitions(css PRIVATE LIBCSS_ENABLE_LOGGING=1)
+endif()
 
 # Export generated files include path to consumers
 target_include_directories(css PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/src/generated")

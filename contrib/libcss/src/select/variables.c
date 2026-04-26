@@ -9,6 +9,7 @@
 
 #include "select/variables.h"
 #include "utils/utils.h"
+#include "utils/libcss_log.h"
 #include "lex/lex.h"
 #include "utils/parserutilserror.h"
 #include "utils/css_utils.h"
@@ -67,7 +68,9 @@ static css_error css__handle_var_function(
     }
 
     if (t->type != CSS_TOKEN_IDENT && t->type != CSS_TOKEN_CUSTOM_PROPERTY) {
-        fprintf(stderr, "var() missing ident or custom property name: got token type %d (data: %.*s)\n", t->type, (int)t->data.len, t->data.data ? (char*)t->data.data : "");
+        CSS_LOG(DEBUG, "var() missing ident or custom property name: got token type %d (data: %.*s)",
+                t->type, (int)t->data.len,
+                t->data.data != NULL ? (char *)t->data.data : "");
         error = CSS_INVALID; goto cleanup;
     }
     lwc_error lerr = lwc_intern_string((char *)t->data.data, t->data.len, &var_name);
@@ -129,7 +132,7 @@ static css_error css__handle_var_function(
     } else if (t->type == CSS_TOKEN_CHAR && t->data.len == 1 && t->data.data[0] == ')') {
         has_fallback = false;
     } else {
-        fprintf(stderr, "var() missing closing paren\n");
+        CSS_LOG(DEBUG, "var() missing closing paren");
         error = CSS_INVALID; goto cleanup;
     }
 
@@ -426,29 +429,31 @@ css_error css__resolve_var_property(
     const struct css_prop_entry *entry = css_prop_lookup(
         lwc_string_data(prop_name), lwc_string_length(prop_name));
     
-    fprintf(stderr, "VAR_RESOLVE: prop='%s' raw='%.*s'\n",
+    CSS_LOG(DEBUG, "VAR_RESOLVE: prop='%s' raw='%.*s'",
         lwc_string_data(prop_name),
         (int)lwc_string_length(raw_value), lwc_string_data(raw_value));
     
+#if CSS_LOG_ENABLED
     /* Dump resolved tokens */
     {
         size_t dbg_len = 0;
         parserutils_vector_get_length(tokens, &dbg_len);
-        fprintf(stderr, "VAR_RESOLVE: resolved %zu tokens for '%s':\n",
+        CSS_LOG(DEBUG, "VAR_RESOLVE: resolved %zu tokens for '%s'",
             dbg_len, lwc_string_data(prop_name));
         int32_t dbg_ctx = 0;
         const css_token *dbg_t;
         while ((dbg_t = parserutils_vector_iterate(tokens, &dbg_ctx)) != NULL) {
             if (dbg_t->type == CSS_TOKEN_EOF) break;
-            fprintf(stderr, "  token[%d] type=%d data='%.*s'\n",
+            CSS_LOG(DEBUG, "  token[%d] type=%d data='%.*s'",
                 dbg_ctx - 1, dbg_t->type,
                 (int)(dbg_t->idata ? lwc_string_length(dbg_t->idata) : dbg_t->data.len),
                 dbg_t->idata ? lwc_string_data(dbg_t->idata) : (const char*)dbg_t->data.data);
         }
     }
+#endif
     
     if (entry == NULL) {
-        fprintf(stderr, "  Property '%s' not found in gperf table\n",
+        CSS_LOG(DEBUG, "  Property '%s' not found in gperf table",
             lwc_string_data(prop_name));
         error = CSS_INVALID;
         goto cleanup;
@@ -465,7 +470,7 @@ css_error css__resolve_var_property(
 
     int32_t token_ctx = 0;
     error = entry->handler(&resolve_lang, tokens, &token_ctx, result_style);
-    fprintf(stderr, "VAR_RESOLVE: handler for '%s' returned %d\n",
+    CSS_LOG(DEBUG, "VAR_RESOLVE: handler for '%s' returned %d",
         lwc_string_data(prop_name), error);
     if (error != CSS_OK) {
         css__stylesheet_style_destroy(result_style);
