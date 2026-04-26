@@ -17,8 +17,27 @@
 
 typedef struct test_node {
     lwc_string *name;
+    struct test_node *parent;
     void *libcss_node_data;
 } test_node;
+
+static bool test_node_name_matches(test_node *n, const css_qname *qname)
+{
+    bool match = false;
+
+    if (n == NULL)
+        return false;
+
+    if (lwc_string_length(qname->name) == 1 &&
+            lwc_string_data(qname->name)[0] == '*') {
+        return true;
+    }
+
+    assert(lwc_string_caseless_isequal(qname->name, n->name,
+        &match) == lwc_error_ok);
+
+    return match;
+}
 
 static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_string **abs)
 {
@@ -64,22 +83,26 @@ static css_error node_id(void *pw, void *node, lwc_string **id)
 
 static css_error named_ancestor_node(void *pw, void *node, const css_qname *qname, void **ancestor)
 {
+    test_node *n = node;
     UNUSED(pw);
-    UNUSED(node);
-    UNUSED(qname);
 
     *ancestor = NULL;
+    for (n = n->parent; n != NULL; n = n->parent) {
+        if (test_node_name_matches(n, qname)) {
+            *ancestor = n;
+            break;
+        }
+    }
 
     return CSS_OK;
 }
 
 static css_error named_parent_node(void *pw, void *node, const css_qname *qname, void **parent)
 {
+    test_node *n = node;
     UNUSED(pw);
-    UNUSED(node);
-    UNUSED(qname);
 
-    *parent = NULL;
+    *parent = test_node_name_matches(n->parent, qname) ? n->parent : NULL;
 
     return CSS_OK;
 }
@@ -108,10 +131,10 @@ static css_error named_generic_sibling_node(void *pw, void *node, const css_qnam
 
 static css_error parent_node(void *pw, void *node, void **parent)
 {
+    test_node *n = node;
     UNUSED(pw);
-    UNUSED(node);
 
-    *parent = NULL;
+    *parent = n->parent;
 
     return CSS_OK;
 }
@@ -254,10 +277,10 @@ static css_error node_has_attribute_substring(
 
 static css_error node_is_root(void *pw, void *node, bool *match)
 {
+    test_node *n = node;
     UNUSED(pw);
-    UNUSED(node);
 
-    *match = true;
+    *match = (n->parent == NULL);
 
     return CSS_OK;
 }
@@ -481,9 +504,15 @@ static css_select_handler select_handler = {
 
 typedef struct style_case {
     css_stylesheet *sheet;
+    css_stylesheet *import_sheet;
+    css_stylesheet *inline_style;
     css_select_ctx *select_ctx;
     css_select_results *results;
+    css_select_results *parent_results;
     lwc_string *node_name;
+    lwc_string *parent_name;
+    test_node node;
+    test_node parent_node;
 } style_case;
 
 static css_unit_ctx unit_ctx = {
@@ -499,7 +528,10 @@ static css_unit_ctx unit_ctx = {
     .measure = NULL,
 };
 
-static const css_computed_style *select_style_from_css(const char *css, style_case *ctx)
+static css_stylesheet *create_stylesheet_from_css(
+    const char *css,
+    bool inline_style,
+    bool allow_pending_imports)
 {
     css_stylesheet_params params = {
         .params_version = CSS_STYLESHEET_PARAMS_VERSION_1,
@@ -508,60 +540,101 @@ static const css_computed_style *select_style_from_css(const char *css, style_ca
         .url = "var_resolve",
         .title = "var_resolve",
         .allow_quirks = false,
-        .inline_style = false,
+        .inline_style = inline_style,
         .resolve = resolve_url,
         .resolve_pw = NULL,
         .import = NULL,
         .import_pw = NULL,
+        .font_face = NULL,
+        .font_face_pw = NULL,
         .color = NULL,
         .color_pw = NULL,
         .font = NULL,
         .font_pw = NULL,
+        .error = NULL,
+        .error_pw = NULL,
     };
-    css_media media = {.type = CSS_MEDIA_ALL};
-    test_node node;
+    css_stylesheet *sheet;
+    css_error err;
 
+    assert(css_stylesheet_create(&params, &sheet) == CSS_OK);
+    err = css_stylesheet_append_data(sheet, (const uint8_t *)css, strlen(css));
+    assert(err == CSS_OK || err == CSS_NEEDDATA);
+    err = css_stylesheet_data_done(sheet);
+    assert(err == CSS_OK || (allow_pending_imports && err == CSS_IMPORTS_PENDING));
+
+    return sheet;
+}
+
+static void destroy_node_data(test_node *node)
+{
+    if (node->libcss_node_data != NULL) {
+        assert(css_libcss_node_data_handler(&select_handler,
+            CSS_NODE_DELETED, NULL, node, NULL,
+            node->libcss_node_data) == CSS_OK);
+        node->libcss_node_data = NULL;
+    }
+}
+
+static const css_computed_style *select_style_for_node(
+    style_case *ctx,
+    test_node *node,
+    const css_stylesheet *inline_style,
+    css_select_results **results)
+{
+    css_media media = {.type = CSS_MEDIA_ALL};
+
+    assert(css_select_style(ctx->select_ctx, node, &unit_ctx, &media,
+            inline_style, &select_handler, NULL, results) == CSS_OK);
+
+    assert(*results != NULL);
+    assert((*results)->styles[CSS_PSEUDO_ELEMENT_NONE] != NULL);
+
+    return (*results)->styles[CSS_PSEUDO_ELEMENT_NONE];
+}
+
+static void setup_style_case(style_case *ctx, const char *css)
+{
     memset(ctx, 0, sizeof(*ctx));
 
-    assert(css_stylesheet_create(&params, &ctx->sheet) == CSS_OK);
-    {
-        css_error err = css_stylesheet_append_data(ctx->sheet, (const uint8_t *)css, strlen(css));
-        assert(err == CSS_OK || err == CSS_NEEDDATA);
-    }
-    assert(css_stylesheet_data_done(ctx->sheet) == CSS_OK);
+    ctx->sheet = create_stylesheet_from_css(css, false, false);
 
     assert(css_select_ctx_create(&ctx->select_ctx) == CSS_OK);
     assert(css_select_ctx_append_sheet(ctx->select_ctx, ctx->sheet, CSS_ORIGIN_AUTHOR, NULL) == CSS_OK);
 
     assert(lwc_intern_string("div", 3, &ctx->node_name) == lwc_error_ok);
-    node.name = ctx->node_name;
-    node.libcss_node_data = NULL;
+    ctx->node.name = ctx->node_name;
+    ctx->node.parent = NULL;
+    ctx->node.libcss_node_data = NULL;
+}
 
-    assert(css_select_style(ctx->select_ctx, &node, &unit_ctx, &media,
-            NULL, &select_handler, NULL, &ctx->results) == CSS_OK);
+static const css_computed_style *select_style_from_css(const char *css, style_case *ctx)
+{
+    setup_style_case(ctx, css);
 
-    if (node.libcss_node_data != NULL) {
-        assert(css_libcss_node_data_handler(&select_handler,
-            CSS_NODE_DELETED, NULL, &node, NULL,
-            node.libcss_node_data) == CSS_OK);
-    }
-
-    assert(ctx->results != NULL);
-    assert(ctx->results->styles[CSS_PSEUDO_ELEMENT_NONE] != NULL);
-
-    return ctx->results->styles[CSS_PSEUDO_ELEMENT_NONE];
+    return select_style_for_node(ctx, &ctx->node, NULL, &ctx->results);
 }
 
 static void destroy_style_case(style_case *ctx)
 {
+    destroy_node_data(&ctx->node);
+    destroy_node_data(&ctx->parent_node);
     if (ctx->results != NULL)
         css_select_results_destroy(ctx->results);
+    if (ctx->parent_results != NULL)
+        css_select_results_destroy(ctx->parent_results);
     if (ctx->select_ctx != NULL)
         css_select_ctx_destroy(ctx->select_ctx);
+    if (ctx->inline_style != NULL)
+        css_stylesheet_destroy(ctx->inline_style);
     if (ctx->sheet != NULL)
         css_stylesheet_destroy(ctx->sheet);
+    if (ctx->import_sheet != NULL)
+        css_stylesheet_destroy(ctx->import_sheet);
     if (ctx->node_name != NULL)
         lwc_string_unref(ctx->node_name);
+    if (ctx->parent_name != NULL)
+        lwc_string_unref(ctx->parent_name);
 }
 
 typedef uint8_t (*length_getter)(
@@ -693,6 +766,142 @@ static void test_invalid_var_overrides_earlier_width(void)
     destroy_style_case(&ctx);
 }
 
+static void test_custom_property_inherits_from_parent_node(void)
+{
+    style_case ctx;
+    const css_computed_style *style;
+
+    setup_style_case(&ctx,
+        ":root { --w: 21px; }"
+        "div { width: var(--w); }");
+
+    assert(lwc_intern_string("html", 4, &ctx.parent_name) == lwc_error_ok);
+    ctx.parent_node.name = ctx.parent_name;
+    ctx.parent_node.parent = NULL;
+    ctx.parent_node.libcss_node_data = NULL;
+
+    select_style_for_node(&ctx, &ctx.parent_node, NULL, &ctx.parent_results);
+
+    ctx.node.parent = &ctx.parent_node;
+    style = select_style_for_node(&ctx, &ctx.node, NULL, &ctx.results);
+
+    expect_length_px("inherited custom property width", style,
+        css_computed_width, CSS_WIDTH_SET, 21);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_inline_style_var_resolution(void)
+{
+    style_case ctx;
+    const css_computed_style *style;
+
+    setup_style_case(&ctx, "div { width: 5px; }");
+    ctx.inline_style = create_stylesheet_from_css(
+        "width: var(--w); --w: 22px;", true, false);
+
+    style = select_style_for_node(&ctx, &ctx.node,
+        ctx.inline_style, &ctx.results);
+
+    expect_length_px("inline style width", style,
+        css_computed_width, CSS_WIDTH_SET, 22);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_imported_sheet_custom_property(void)
+{
+    style_case ctx;
+    lwc_string *url = NULL;
+    const css_computed_style *style;
+
+    memset(&ctx, 0, sizeof(ctx));
+
+    ctx.sheet = create_stylesheet_from_css(
+        "@import url(\"vars.css\");"
+        "div { width: var(--w); }", false, true);
+    ctx.import_sheet = create_stylesheet_from_css(
+        "div { --w: 23px; }", false, false);
+
+    assert(css_stylesheet_next_pending_import(ctx.sheet, &url) == CSS_OK);
+    lwc_string_unref(url);
+    assert(css_stylesheet_register_import(ctx.sheet, ctx.import_sheet) == CSS_OK);
+
+    assert(css_select_ctx_create(&ctx.select_ctx) == CSS_OK);
+    assert(css_select_ctx_append_sheet(ctx.select_ctx, ctx.sheet,
+        CSS_ORIGIN_AUTHOR, NULL) == CSS_OK);
+
+    assert(lwc_intern_string("div", 3, &ctx.node_name) == lwc_error_ok);
+    ctx.node.name = ctx.node_name;
+    ctx.node.parent = NULL;
+    ctx.node.libcss_node_data = NULL;
+
+    style = select_style_for_node(&ctx, &ctx.node, NULL, &ctx.results);
+
+    expect_length_px("imported custom property width", style,
+        css_computed_width, CSS_WIDTH_SET, 23);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_pseudo_element_uses_element_vars(void)
+{
+    style_case ctx;
+
+    select_style_from_css(
+        "div { --w: 24px; }"
+        "div::before { width: var(--w); }", &ctx);
+
+    assert(ctx.results->styles[CSS_PSEUDO_ELEMENT_BEFORE] != NULL);
+    expect_length_px("before pseudo width",
+        ctx.results->styles[CSS_PSEUDO_ELEMENT_BEFORE],
+        css_computed_width, CSS_WIDTH_SET, 24);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_literal_fallback_value(void)
+{
+    style_case ctx;
+    const css_computed_style *style =
+        select_style_from_css("div { width: var(--missing, 25px); }", &ctx);
+
+    expect_length_px("literal fallback width", style,
+        css_computed_width, CSS_WIDTH_SET, 25);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_shorthand_fallback_value(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css(
+        "div { padding: var(--missing, 6px 7px); }", &ctx);
+
+    expect_length_px("padding fallback top", style,
+        css_computed_padding_top, CSS_PADDING_SET, 6);
+    expect_length_px("padding fallback right", style,
+        css_computed_padding_right, CSS_PADDING_SET, 7);
+    expect_length_px("padding fallback bottom", style,
+        css_computed_padding_bottom, CSS_PADDING_SET, 6);
+    expect_length_px("padding fallback left", style,
+        css_computed_padding_left, CSS_PADDING_SET, 7);
+
+    destroy_style_case(&ctx);
+}
+
+static void test_variable_cycle_is_invalid(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css(
+        "div { --a: var(--b); --b: var(--a); width: var(--a); }", &ctx);
+
+    expect_length_type("cycle width", style,
+        css_computed_width, CSS_WIDTH_AUTO);
+
+    destroy_style_case(&ctx);
+}
+
 int main(void)
 {
     test_same_rule_custom_property_after_use();
@@ -701,6 +910,13 @@ int main(void)
     test_var_shorthand_keeps_declaration_order();
     test_important_custom_property_wins();
     test_invalid_var_overrides_earlier_width();
+    test_custom_property_inherits_from_parent_node();
+    test_inline_style_var_resolution();
+    test_imported_sheet_custom_property();
+    test_pseudo_element_uses_element_vars();
+    test_literal_fallback_value();
+    test_shorthand_fallback_value();
+    test_variable_cycle_is_invalid();
 
     printf("PASS\n");
     return 0;
