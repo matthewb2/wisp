@@ -5,6 +5,7 @@
  */
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "select/variables.h"
@@ -116,6 +117,63 @@ struct css_var_value {
     uint32_t ref_count;
     uint32_t ref_capacity;
 };
+
+struct css_var_lookup {
+    lwc_string *name;
+    uint32_t index;
+};
+
+static uint32_t css__var_lookup_capacity_for_count(uint32_t count)
+{
+    uint32_t capacity = 8;
+
+    while (capacity < count * 2)
+        capacity <<= 1;
+
+    return capacity;
+}
+
+static bool css__var_lookup_find(
+    const css_var_lookup *lookup,
+    uint32_t capacity,
+    lwc_string *name,
+    uint32_t *index)
+{
+    uint32_t slot;
+    uint32_t mask;
+
+    if (lookup == NULL || capacity == 0)
+        return false;
+
+    mask = capacity - 1;
+    slot = lwc_string_hash_value(name) & mask;
+
+    while (lookup[slot].name != NULL) {
+        if (lookup[slot].name == name) {
+            if (index != NULL)
+                *index = lookup[slot].index;
+            return true;
+        }
+        slot = (slot + 1) & mask;
+    }
+
+    return false;
+}
+
+static void css__var_lookup_insert(
+    css_var_lookup *lookup,
+    uint32_t capacity,
+    lwc_string *name,
+    uint32_t index)
+{
+    uint32_t slot = lwc_string_hash_value(name) & (capacity - 1);
+
+    while (lookup[slot].name != NULL && lookup[slot].name != name)
+        slot = (slot + 1) & (capacity - 1);
+
+    lookup[slot].name = name;
+    lookup[slot].index = index;
+}
 
 static bool css__is_var_function_token(const css_token *token)
 {
@@ -357,6 +415,66 @@ static css_var_context *css__variables_ctx_ref(css_var_context *ctx)
     return ctx;
 }
 
+static void css__variables_ctx_rebuild_lookup(css_var_context *ctx)
+{
+    css_var_lookup *new_lookup;
+    uint32_t capacity;
+
+    if (ctx == NULL)
+        return;
+
+    if (ctx->count == 0) {
+        free(ctx->lookup);
+        ctx->lookup = NULL;
+        ctx->lookup_capacity = 0;
+        ctx->lookup_valid = true;
+        return;
+    }
+
+    capacity = css__var_lookup_capacity_for_count(ctx->count);
+    if (capacity != ctx->lookup_capacity) {
+        new_lookup = calloc(capacity, sizeof(css_var_lookup));
+        if (new_lookup == NULL) {
+            ctx->lookup_valid = false;
+            return;
+        }
+
+        free(ctx->lookup);
+        ctx->lookup = new_lookup;
+        ctx->lookup_capacity = capacity;
+    } else {
+        memset(ctx->lookup, 0, capacity * sizeof(css_var_lookup));
+    }
+
+    for (uint32_t i = 0; i < ctx->count; i++) {
+        css__var_lookup_insert(ctx->lookup, ctx->lookup_capacity,
+            ctx->entries[i].name, i);
+    }
+
+    ctx->lookup_valid = true;
+}
+
+static void css__variables_ctx_update_lookup_after_append(
+    css_var_context *ctx,
+    uint32_t index)
+{
+    uint32_t capacity;
+
+    if (ctx == NULL)
+        return;
+
+    capacity = css__var_lookup_capacity_for_count(ctx->count);
+    if (ctx->lookup_valid &&
+            ctx->lookup != NULL &&
+            capacity == ctx->lookup_capacity) {
+        css__var_lookup_insert(ctx->lookup, ctx->lookup_capacity,
+            ctx->entries[index].name, index);
+        return;
+    }
+
+    css__variables_ctx_rebuild_lookup(ctx);
+}
+
 static void css__variables_ctx_clear_cycle_cache(css_var_context *ctx)
 {
     if (ctx == NULL)
@@ -385,6 +503,15 @@ static bool css__variables_ctx_find_name(
 {
     if (ctx == NULL)
         return false;
+
+    if (ctx->lookup_valid) {
+        if (ctx->lookup != NULL) {
+            return css__var_lookup_find(
+                ctx->lookup, ctx->lookup_capacity, name, index);
+        }
+        if (ctx->count == 0)
+            return false;
+    }
 
     for (uint32_t i = 0; i < ctx->count; i++) {
         if (ctx->entries[i].name == name) {
@@ -422,13 +549,98 @@ typedef struct css_var_binding_list {
     css_var_binding *items;
     uint32_t count;
     uint32_t capacity;
+    css_var_lookup *lookup;
+    uint32_t lookup_capacity;
+    bool lookup_valid;
 } css_var_binding_list;
+
+static void css__var_binding_list_rebuild_lookup(css_var_binding_list *list)
+{
+    css_var_lookup *new_lookup;
+    uint32_t capacity;
+
+    if (list == NULL)
+        return;
+
+    if (list->count == 0) {
+        free(list->lookup);
+        list->lookup = NULL;
+        list->lookup_capacity = 0;
+        list->lookup_valid = true;
+        return;
+    }
+
+    capacity = css__var_lookup_capacity_for_count(list->count);
+    if (capacity != list->lookup_capacity) {
+        new_lookup = calloc(capacity, sizeof(css_var_lookup));
+        if (new_lookup == NULL) {
+            list->lookup_valid = false;
+            return;
+        }
+
+        free(list->lookup);
+        list->lookup = new_lookup;
+        list->lookup_capacity = capacity;
+    } else {
+        memset(list->lookup, 0, capacity * sizeof(css_var_lookup));
+    }
+
+    for (uint32_t i = 0; i < list->count; i++) {
+        css__var_lookup_insert(list->lookup, list->lookup_capacity,
+            list->items[i].entry->name, i);
+    }
+
+    list->lookup_valid = true;
+}
+
+static void css__var_binding_list_update_lookup_after_append(
+    css_var_binding_list *list,
+    uint32_t index)
+{
+    uint32_t capacity;
+
+    if (list == NULL)
+        return;
+
+    capacity = css__var_lookup_capacity_for_count(list->count);
+    if (list->lookup_valid &&
+            list->lookup != NULL &&
+            capacity == list->lookup_capacity) {
+        css__var_lookup_insert(list->lookup, list->lookup_capacity,
+            list->items[index].entry->name, index);
+        return;
+    }
+
+    css__var_binding_list_rebuild_lookup(list);
+}
+
+static void css__var_binding_list_destroy(css_var_binding_list *list)
+{
+    if (list == NULL)
+        return;
+
+    free(list->lookup);
+    free(list->items);
+    memset(list, 0, sizeof(*list));
+}
 
 static bool css__var_binding_list_find_name(
     const css_var_binding_list *list,
     lwc_string *name,
     uint32_t *index)
 {
+    if (list == NULL)
+        return false;
+
+    if (list->lookup_valid) {
+        if (list->lookup != NULL) {
+            return css__var_lookup_find(
+                list->lookup, list->lookup_capacity, name, index);
+        }
+        if (list->count == 0)
+            return false;
+    }
+
     for (uint32_t i = 0; i < list->count; i++) {
         if (list->items[i].entry->name == name) {
             if (index != NULL)
@@ -446,6 +658,7 @@ static css_error css__var_binding_list_append(
 {
     css_var_binding *new_items;
     uint32_t new_cap;
+    uint32_t index;
 
     if (css__var_binding_list_find_name(list, entry->name, NULL))
         return CSS_OK;
@@ -460,7 +673,9 @@ static css_error css__var_binding_list_append(
         list->capacity = new_cap;
     }
 
-    list->items[list->count++].entry = entry;
+    index = list->count++;
+    list->items[index].entry = entry;
+    css__var_binding_list_update_lookup_after_append(list, index);
     return CSS_OK;
 }
 
@@ -610,7 +825,7 @@ static css_error css__variables_ctx_ensure_cycles(css_var_context *ctx)
 cleanup:
     free(search.state);
     free(search.stack);
-    free(bindings.items);
+    css__var_binding_list_destroy(&bindings);
 
     return error;
 }
@@ -858,6 +1073,7 @@ css_error css__variables_ctx_create(css_var_context **out)
 
     ctx->refcnt = 1;
     ctx->cycles_valid = true;
+    ctx->lookup_valid = true;
     *out = ctx;
     return CSS_OK;
 }
@@ -879,7 +1095,7 @@ css_error css__variables_ctx_clone(
     if (src != NULL) {
         error = css__variables_ctx_collect_effective(src, &bindings);
         if (error != CSS_OK) {
-            free(bindings.items);
+            css__var_binding_list_destroy(&bindings);
             css__variables_ctx_destroy(ctx);
             return error;
         }
@@ -888,7 +1104,7 @@ css_error css__variables_ctx_clone(
     if (bindings.count > 0) {
         ctx->entries = malloc(bindings.count * sizeof(css_var_entry));
         if (ctx->entries == NULL) {
-            free(bindings.items);
+            css__var_binding_list_destroy(&bindings);
             css__variables_ctx_destroy(ctx);
             return CSS_NOMEM;
         }
@@ -908,9 +1124,10 @@ css_error css__variables_ctx_clone(
         }
 
         ctx->cycles_valid = false;
+        css__variables_ctx_rebuild_lookup(ctx);
     }
 
-    free(bindings.items);
+    css__var_binding_list_destroy(&bindings);
     *out = ctx;
     return CSS_OK;
 }
@@ -947,6 +1164,7 @@ void css__variables_ctx_destroy(css_var_context *ctx)
 
     css__variables_ctx_clear_cycle_cache(ctx);
     css__variables_ctx_destroy(ctx->parent);
+    free(ctx->lookup);
     free(ctx->entries);
     free(ctx);
 }
@@ -956,24 +1174,23 @@ css_error css__variables_ctx_set(css_var_context *ctx,
 {
     css_var_value *parsed_value;
     css_error error;
+    uint32_t index;
 
     error = css__var_value_create(value, &parsed_value);
     if (error != CSS_OK)
         return error;
 
     /* Check for existing entry (pointer comparison — interned strings) */
-    for (uint32_t i = 0; i < ctx->count; i++) {
-        if (ctx->entries[i].name == name) {
-            /* Replace value */
-            css__var_value_unref(ctx->entries[i].value);
-            ctx->entries[i].value = parsed_value;
-            ctx->entries[i].origin = CSS_ORIGIN_AUTHOR;
-            ctx->entries[i].specificity = 0;
-            ctx->entries[i].important = false;
-            ctx->entries[i].cascaded = true;
-            css__variables_ctx_invalidate_cycles(ctx);
-            return CSS_OK;
-        }
+    if (css__variables_ctx_find_name(ctx, name, &index)) {
+        /* Replace value */
+        css__var_value_unref(ctx->entries[index].value);
+        ctx->entries[index].value = parsed_value;
+        ctx->entries[index].origin = CSS_ORIGIN_AUTHOR;
+        ctx->entries[index].specificity = 0;
+        ctx->entries[index].important = false;
+        ctx->entries[index].cascaded = true;
+        css__variables_ctx_invalidate_cycles(ctx);
+        return CSS_OK;
     }
 
     /* New entry — grow if needed */
@@ -991,13 +1208,14 @@ css_error css__variables_ctx_set(css_var_context *ctx,
         ctx->capacity = new_cap;
     }
 
-    ctx->entries[ctx->count].name = lwc_string_ref(name);
-    ctx->entries[ctx->count].value = parsed_value;
-    ctx->entries[ctx->count].origin = CSS_ORIGIN_AUTHOR;
-    ctx->entries[ctx->count].specificity = 0;
-    ctx->entries[ctx->count].important = false;
-    ctx->entries[ctx->count].cascaded = true;
-    ctx->count++;
+    index = ctx->count++;
+    ctx->entries[index].name = lwc_string_ref(name);
+    ctx->entries[index].value = parsed_value;
+    ctx->entries[index].origin = CSS_ORIGIN_AUTHOR;
+    ctx->entries[index].specificity = 0;
+    ctx->entries[index].important = false;
+    ctx->entries[index].cascaded = true;
+    css__variables_ctx_update_lookup_after_append(ctx, index);
     css__variables_ctx_invalidate_cycles(ctx);
 
     return CSS_OK;
@@ -1057,23 +1275,22 @@ css_error css__variables_ctx_cascade(
 {
     css_var_value *parsed_value = NULL;
     css_error error;
+    uint32_t index;
 
-    for (uint32_t i = 0; i < ctx->count; i++) {
-        if (ctx->entries[i].name == name) {
-            if (css__variable_decl_outranks(&ctx->entries[i],
-                    origin, specificity, important)) {
-                error = css__var_value_create(value, &parsed_value);
-                if (error != CSS_OK)
-                    return error;
+    if (css__variables_ctx_find_name(ctx, name, &index)) {
+        if (css__variable_decl_outranks(&ctx->entries[index],
+                origin, specificity, important)) {
+            error = css__var_value_create(value, &parsed_value);
+            if (error != CSS_OK)
+                return error;
 
-                css__var_value_unref(ctx->entries[i].value);
-                ctx->entries[i].value = parsed_value;
-                css__variables_ctx_update_metadata(&ctx->entries[i],
-                    origin, specificity, important);
-                css__variables_ctx_invalidate_cycles(ctx);
-            }
-            return CSS_OK;
+            css__var_value_unref(ctx->entries[index].value);
+            ctx->entries[index].value = parsed_value;
+            css__variables_ctx_update_metadata(&ctx->entries[index],
+                origin, specificity, important);
+            css__variables_ctx_invalidate_cycles(ctx);
         }
+        return CSS_OK;
     }
 
     if (ctx->count >= ctx->capacity) {
@@ -1093,11 +1310,12 @@ css_error css__variables_ctx_cascade(
     if (error != CSS_OK)
         return error;
 
-    ctx->entries[ctx->count].name = lwc_string_ref(name);
-    ctx->entries[ctx->count].value = parsed_value;
-    css__variables_ctx_update_metadata(&ctx->entries[ctx->count],
+    index = ctx->count++;
+    ctx->entries[index].name = lwc_string_ref(name);
+    ctx->entries[index].value = parsed_value;
+    css__variables_ctx_update_metadata(&ctx->entries[index],
         origin, specificity, important);
-    ctx->count++;
+    css__variables_ctx_update_lookup_after_append(ctx, index);
     css__variables_ctx_invalidate_cycles(ctx);
 
     return CSS_OK;
@@ -1106,13 +1324,13 @@ css_error css__variables_ctx_cascade(
 lwc_string *css__variables_ctx_get(const css_var_context *ctx,
     lwc_string *name)
 {
+    uint32_t index;
+
     if (ctx == NULL)
         return NULL;
 
-    for (uint32_t i = 0; i < ctx->count; i++) {
-        if (ctx->entries[i].name == name)
-            return ctx->entries[i].value->raw;
-    }
+    if (css__variables_ctx_find_name(ctx, name, &index))
+        return ctx->entries[index].value->raw;
 
     return css__variables_ctx_get(ctx->parent, name);
 }

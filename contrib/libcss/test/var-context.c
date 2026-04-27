@@ -31,6 +31,8 @@ int main(void)
     assert(error == CSS_OK);
     assert(ctx != NULL);
     assert(ctx->count == 0);
+    assert(ctx->lookup_valid);
+    assert(ctx->lookup == NULL);
     printf("Test 1 (create): PASS\n");
 
     /* Test 2: Get from empty context returns NULL */
@@ -41,6 +43,8 @@ int main(void)
     error = css__variables_ctx_set(ctx, name1, val1);
     assert(error == CSS_OK);
     assert(ctx->count == 1);
+    assert(ctx->lookup_valid);
+    assert(ctx->lookup != NULL);
     assert(css__variables_ctx_get(ctx, name1) == val1);
     printf("Test 3 (set+get): PASS\n");
 
@@ -48,6 +52,7 @@ int main(void)
     error = css__variables_ctx_set(ctx, name2, val2);
     assert(error == CSS_OK);
     assert(ctx->count == 2);
+    assert(ctx->lookup_valid);
     assert(css__variables_ctx_get(ctx, name1) == val1);
     assert(css__variables_ctx_get(ctx, name2) == val2);
     printf("Test 4 (second var): PASS\n");
@@ -56,6 +61,7 @@ int main(void)
     error = css__variables_ctx_set(ctx, name1, val3);
     assert(error == CSS_OK);
     assert(ctx->count == 2);  /* Count unchanged — replaced, not appended */
+    assert(ctx->lookup_valid);
     assert(css__variables_ctx_get(ctx, name1) == val3);
     assert(css__variables_ctx_get(ctx, name2) == val2);
     printf("Test 5 (override): PASS\n");
@@ -70,6 +76,8 @@ int main(void)
     assert(error == CSS_OK);
     assert(clone != NULL);
     assert(clone->count == 2);
+    assert(clone->lookup_valid);
+    assert(clone->lookup != NULL);
     assert(css__variables_ctx_get(clone, name1) == val3);
     assert(css__variables_ctx_get(clone, name2) == val2);
     printf("Test 7 (clone): PASS\n");
@@ -87,11 +95,15 @@ int main(void)
     assert(error == CSS_OK);
     assert(inherited != NULL);
     assert(inherited->count == 0);
+    assert(inherited->lookup_valid);
+    assert(inherited->lookup == NULL);
     assert(css__variables_ctx_get(inherited, name1) == val1);
     assert(css__variables_ctx_get(inherited, name2) == val2);
     error = css__variables_ctx_set(inherited, name2, val3);
     assert(error == CSS_OK);
     assert(inherited->count == 1);
+    assert(inherited->lookup_valid);
+    assert(inherited->lookup != NULL);
     assert(css__variables_ctx_get(inherited, name2) == val3);
     assert(css__variables_ctx_get(ctx, name2) == val2);
     printf("Test 9 (inherited overlay): PASS\n");
@@ -102,6 +114,8 @@ int main(void)
     assert(error == CSS_OK);
     assert(empty_clone != NULL);
     assert(empty_clone->count == 0);
+    assert(empty_clone->lookup_valid);
+    assert(empty_clone->lookup == NULL);
     printf("Test 10 (clone NULL): PASS\n");
 
     /* Test 11: Destroy (should not crash/leak) */

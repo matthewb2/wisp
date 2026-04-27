@@ -16,6 +16,7 @@
  * Value storage is opaque; entries keep tokenized custom property text.
  */
 typedef struct css_var_value css_var_value;
+typedef struct css_var_lookup css_var_lookup;
 
 typedef struct css_var_entry {
     lwc_string *name;   /* e.g. "--primary" */
@@ -37,6 +38,9 @@ typedef struct css_var_context {
     css_var_entry *entries;
     uint32_t count;
     uint32_t capacity;
+    css_var_lookup *lookup;
+    uint32_t lookup_capacity;
+    bool lookup_valid;
     lwc_string **cyclic_names;
     uint32_t cyclic_count;
     uint32_t cyclic_capacity;
