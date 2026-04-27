@@ -1864,7 +1864,7 @@ css_error parseProperty(
                     return error;
             }
 
-            /* Build the raw value text from all tokens,
+            /* Build the raw value text used as the deferred token-cache key,
              * reconstructing prefixes stripped by the lexer */
             size_t total_len = 0;
             int32_t value_end = value_start;
@@ -2034,8 +2034,9 @@ css_error parseProperty(
 /**
  * Parse a custom property declaration (--name: value)
  *
- * Captures the raw value text from all remaining tokens and stores
- * both name and value as lwc_strings in the stylesheet's string_vector.
+ * Captures the raw value text from all remaining tokens and stores both name
+ * and value as lwc_strings in the stylesheet's string_vector. The cascade
+ * stores the value in css_var_value, where tokens and var() refs are cached.
  * Emits bytecode: [OPV(CSS_PROP_CUSTOM_PROPERTY, flags, 0)]
  *                 [name_string_idx] [value_string_idx]
  */

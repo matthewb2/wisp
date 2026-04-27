@@ -12,8 +12,9 @@
 #include <libcss/types.h>
 
 /**
- * A single custom property binding: name → value.
- * Value storage is opaque; entries keep tokenized custom property text.
+ * A single custom property binding: name -> value.
+ * Entries point to ref-counted custom property values. Each value keeps the
+ * original text plus cached tokens and cached var() references.
  */
 typedef struct css_var_value css_var_value;
 typedef struct css_var_lookup css_var_lookup;
@@ -28,9 +29,11 @@ typedef struct css_var_entry {
 } css_var_entry;
 
 /**
- * Per-element variable context: flat array of name→value pairs.
- * Typical size is 0-20 entries; linear scan with lwc pointer
- * comparison is faster than a hash map at these sizes.
+ * Per-element variable context.
+ *
+ * Local declarations are kept in append order with a best-effort lookup table
+ * for fast name lookups. Inherited values are reached through parent contexts,
+ * so child contexts do not copy every inherited custom property.
  */
 typedef struct css_var_context {
     uint32_t refcnt;
@@ -91,7 +94,7 @@ css_error css__variables_ctx_cascade(
 
 /**
  * Look up a variable by name.
- * Returns the value lwc_string (not ref'd — caller must ref if keeping),
+ * Returns the value lwc_string (not ref'd - caller must ref if keeping),
  * or NULL if not found.
  */
 lwc_string *css__variables_ctx_get(const css_var_context *ctx,

@@ -2936,9 +2936,9 @@ css_error cascade_style(const css_style *style, css_select_state *state)
             continue;
         }
 
-        /* Custom property declarations: skip the 2 trailing words
-         * (name_string_idx, value_string_idx). Full processing
-         * will be added when the variable context is implemented. */
+        /* Custom property declarations carry 2 trailing words:
+         * (name_string_idx, value_string_idx). During the variable-collection
+         * pass, cascade them into the per-element variable context. */
         if (op == CSS_PROP_CUSTOM_PROPERTY) {
             /* Read name and value string indices from bytecode */
             uint32_t name_idx = *s.bytecode;
