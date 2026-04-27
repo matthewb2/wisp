@@ -109,8 +109,9 @@ struct css_select_state;
 
 /**
  * Resolve a deferred var() property: substitute all var() references
- * in the raw value text, re-parse through the property handler (found
- * via gperf lookup on prop_name), and cascade the result.
+ * in the tokenized value text, re-parse through the property handler
+ * (found via gperf lookup on prop_name), and cascade the result.
+ * The raw value string index is used to cache tokenization per stylesheet.
  *
  * Works for both longhands and shorthands.
  *
@@ -118,10 +119,16 @@ struct css_select_state;
  */
 css_error css__resolve_var_property(
     lwc_string *prop_name,
+    uint32_t raw_value_idx,
     lwc_string *raw_value,
     css_var_context *var_ctx,
     struct css_stylesheet *sheet,
     bool important,
     struct css_select_state *state);
+
+/**
+ * Destroy any tokenized deferred var() values cached on a stylesheet.
+ */
+void css__stylesheet_var_token_cache_destroy(struct css_stylesheet *sheet);
 
 #endif

@@ -40,7 +40,8 @@ enum css_properties_e {
 /**
  * Special opcode for deferred var() property resolution.
  * Used when any property value (shorthand or longhand) contains var().
- * The entire raw value text is stored for resolution at computed-value time.
+ * The raw value text is stored as a stylesheet string and tokenized through
+ * a per-stylesheet cache at computed-value time.
  *
  * Bytecode layout: [OPV] [prop_name_string_idx] [raw_value_string_idx]
  */

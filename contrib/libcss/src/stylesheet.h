@@ -17,6 +17,7 @@
 #include <libcss/functypes.h>
 #include <libcss/stylesheet.h>
 #include <libcss/types.h>
+#include <parserutils/utils/vector.h>
 
 #include "bytecode/bytecode.h"
 #include "parse/mq.h"
@@ -249,6 +250,11 @@ struct css_stylesheet {
                                * length in entries */
     uint32_t string_vector_c; /**< The number of string
                                * vector entries used */
+
+    parserutils_vector **var_token_vector; /**< Token cache for
+                                            * deferred var() values,
+                                            * indexed by string number - 1 */
+    uint32_t var_token_vector_l; /**< Token cache allocated length */
 };
 
 css_error css__stylesheet_style_create(css_stylesheet *sheet, css_style **style);

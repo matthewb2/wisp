@@ -36,12 +36,6 @@ const struct css_prop_entry *css_prop_lookup(
 
 #define VAR_CTX_INITIAL_CAPACITY 4
 
-static css_error css__resolve_tokens(
-    lwc_string *value,
-    css_var_context *var_ctx,
-    parserutils_vector *out_tokens,
-    int depth);
-
 static css_error css__resolve_token_vector(
     const parserutils_vector *value,
     css_var_context *var_ctx,
@@ -353,6 +347,66 @@ cleanup:
     css__tokens_destroy(tokens);
 
     return error;
+}
+
+void css__stylesheet_var_token_cache_destroy(css_stylesheet *sheet)
+{
+    if (sheet == NULL)
+        return;
+
+    for (uint32_t i = 0; i < sheet->var_token_vector_l; i++)
+        css__tokens_destroy(sheet->var_token_vector[i]);
+
+    free(sheet->var_token_vector);
+    sheet->var_token_vector = NULL;
+    sheet->var_token_vector_l = 0;
+}
+
+static css_error css__stylesheet_var_tokens_get(
+    css_stylesheet *sheet,
+    uint32_t string_number,
+    lwc_string *raw,
+    const parserutils_vector **tokens)
+{
+    parserutils_vector **new_vector;
+    uint32_t new_len;
+    uint32_t index;
+    css_error error;
+
+    if (sheet == NULL || raw == NULL || tokens == NULL || string_number == 0)
+        return CSS_BADPARM;
+
+    index = string_number - 1;
+    if (index >= sheet->var_token_vector_l) {
+        new_len = sheet->var_token_vector_l;
+        if (new_len == 0)
+            new_len = 16;
+
+        while (new_len <= index)
+            new_len *= 2;
+
+        new_vector = realloc(sheet->var_token_vector,
+            new_len * sizeof(parserutils_vector *));
+        if (new_vector == NULL)
+            return CSS_NOMEM;
+
+        memset(new_vector + sheet->var_token_vector_l, 0,
+            (new_len - sheet->var_token_vector_l) *
+            sizeof(parserutils_vector *));
+
+        sheet->var_token_vector = new_vector;
+        sheet->var_token_vector_l = new_len;
+    }
+
+    if (sheet->var_token_vector[index] == NULL) {
+        error = css__tokenise_value(raw, &sheet->var_token_vector[index],
+            NULL);
+        if (error != CSS_OK)
+            return error;
+    }
+
+    *tokens = sheet->var_token_vector[index];
+    return CSS_OK;
 }
 
 static css_error css__var_value_create(
@@ -1047,24 +1101,6 @@ static css_error css__resolve_token_vector(
     return CSS_OK;
 }
 
-static css_error css__resolve_tokens(
-    lwc_string *value,
-    css_var_context *var_ctx,
-    parserutils_vector *out_tokens,
-    int depth)
-{
-    parserutils_vector *tokens = NULL;
-    css_error error;
-
-    error = css__tokenise_value(value, &tokens, NULL);
-    if (error == CSS_OK)
-        error = css__resolve_token_vector(tokens, var_ctx, out_tokens, depth);
-
-    css__tokens_destroy(tokens);
-
-    return error;
-}
-
 css_error css__variables_ctx_create(css_var_context **out)
 {
     css_var_context *ctx = calloc(1, sizeof(*ctx));
@@ -1444,6 +1480,7 @@ cleanup:
 
 css_error css__resolve_var_property(
     lwc_string *prop_name,
+    uint32_t raw_value_idx,
     lwc_string *raw_value,
     css_var_context *var_ctx,
     css_stylesheet *sheet,
@@ -1453,6 +1490,7 @@ css_error css__resolve_var_property(
     css_error error = CSS_OK;
     parserutils_error perr;
     parserutils_vector *tokens = NULL;
+    const parserutils_vector *raw_tokens = NULL;
     css_style *result_style = NULL;
     const struct css_prop_entry *entry;
 
@@ -1470,13 +1508,18 @@ css_error css__resolve_var_property(
         return CSS_INVALID;
     }
 
-    /* Step 2: Resolve all var() references in the raw value text */
+    /* Step 2: Resolve all var() references in cached value tokens */
     perr = parserutils_vector_create(sizeof(css_token), 16, &tokens);
     if (perr != PARSERUTILS_OK) {
         return css_error_from_parserutils_error(perr);
     }
 
-    error = css__resolve_tokens(raw_value, var_ctx, tokens, 1);
+    error = css__stylesheet_var_tokens_get(sheet, raw_value_idx,
+        raw_value, &raw_tokens);
+    if (error != CSS_OK)
+        goto cleanup;
+
+    error = css__resolve_token_vector(raw_tokens, var_ctx, tokens, 1);
     if (error != CSS_OK) {
         if (error == CSS_INVALID)
             error = css__cascade_unset_property(entry, sheet, important, state);

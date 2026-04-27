@@ -17,6 +17,7 @@
 #include "parse/mq.h"
 #include "select/dispatch.h"
 #include "select/font_face.h"
+#include "select/variables.h"
 #include "stylesheet.h"
 
 static css_error _add_selectors(css_stylesheet *sheet, css_rule *rule);
@@ -286,6 +287,8 @@ css_error css_stylesheet_destroy(css_stylesheet *sheet)
 
     if (sheet->cached_style != NULL)
         css__stylesheet_style_destroy(sheet->cached_style);
+
+    css__stylesheet_var_token_cache_destroy(sheet);
 
     /* destroy string vector */
     for (index = 0; index < sheet->string_vector_c; index++) {

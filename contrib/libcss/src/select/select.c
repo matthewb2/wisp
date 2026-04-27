@@ -2971,7 +2971,7 @@ css_error cascade_style(const css_style *style, css_select_state *state)
             continue;
         }
 
-        /* Deferred var() property: resolve variables in raw value text,
+        /* Deferred var() property: resolve variables in cached value tokens,
          * then re-parse through the property handler and cascade. */
         if (op == CSS_PROP_VAR_DEFERRED) {
             uint32_t prop_name_idx = *s.bytecode;
@@ -2994,7 +2994,7 @@ css_error cascade_style(const css_style *style, css_select_state *state)
             if (prop_name_str != NULL && raw_value_str != NULL &&
                 state->var_ctx != NULL) {
                 css_error res = css__resolve_var_property(
-                    prop_name_str, raw_value_str,
+                    prop_name_str, raw_value_idx, raw_value_str,
                     state->var_ctx, s.sheet,
                     isImportant(opv), state);
                 /* CSS_INVALID = unresolvable var(); property stays at
