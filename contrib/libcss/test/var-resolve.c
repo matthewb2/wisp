@@ -741,6 +741,20 @@ static void test_var_shorthand_keeps_declaration_order(void)
     destroy_style_case(&ctx);
 }
 
+static void test_reused_custom_property_expansion(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css(
+        "div { --size: 36px; width: var(--size); height: var(--size); }", &ctx);
+
+    expect_length_px("reused variable width", style,
+        css_computed_width, CSS_WIDTH_SET, 36);
+    expect_length_px("reused variable height", style,
+        css_computed_height, CSS_HEIGHT_SET, 36);
+
+    destroy_style_case(&ctx);
+}
+
 static void test_important_custom_property_wins(void)
 {
     style_case ctx;
@@ -788,6 +802,63 @@ static void test_custom_property_inherits_from_parent_node(void)
     expect_length_px("inherited custom property width", style,
         css_computed_width, CSS_WIDTH_SET, 21);
 
+    destroy_style_case(&ctx);
+}
+
+static void test_inherited_custom_property_resolves_with_child_shadow(void)
+{
+    style_case ctx;
+    test_node plain_node;
+    test_node shadow_node;
+    css_select_results *plain_results = NULL;
+    css_select_results *shadow_results = NULL;
+    lwc_string *plain_name = NULL;
+    lwc_string *shadow_name = NULL;
+    const css_computed_style *style;
+
+    setup_style_case(&ctx,
+        ":root { --base: 40px; --w: var(--base); }"
+        "div { width: var(--w); }"
+        "section { --base: 41px; width: var(--w); }");
+
+    assert(lwc_intern_string("html", 4, &ctx.parent_name) == lwc_error_ok);
+    ctx.parent_node.name = ctx.parent_name;
+    ctx.parent_node.parent = NULL;
+    ctx.parent_node.libcss_node_data = NULL;
+
+    select_style_for_node(&ctx, &ctx.parent_node, NULL, &ctx.parent_results);
+
+    ctx.node.parent = &ctx.parent_node;
+    style = select_style_for_node(&ctx, &ctx.node, NULL, &ctx.results);
+    expect_length_px("inherited variable without shadow", style,
+        css_computed_width, CSS_WIDTH_SET, 40);
+
+    assert(lwc_intern_string("section", 7, &shadow_name) == lwc_error_ok);
+    shadow_node.name = shadow_name;
+    shadow_node.parent = &ctx.parent_node;
+    shadow_node.libcss_node_data = NULL;
+
+    style = select_style_for_node(&ctx, &shadow_node, NULL, &shadow_results);
+    expect_length_px("inherited variable with child shadow", style,
+        css_computed_width, CSS_WIDTH_SET, 41);
+
+    assert(lwc_intern_string("div", 3, &plain_name) == lwc_error_ok);
+    plain_node.name = plain_name;
+    plain_node.parent = &ctx.parent_node;
+    plain_node.libcss_node_data = NULL;
+
+    style = select_style_for_node(&ctx, &plain_node, NULL, &plain_results);
+    expect_length_px("inherited variable after child shadow", style,
+        css_computed_width, CSS_WIDTH_SET, 40);
+
+    destroy_node_data(&plain_node);
+    destroy_node_data(&shadow_node);
+    if (plain_results != NULL)
+        css_select_results_destroy(plain_results);
+    if (shadow_results != NULL)
+        css_select_results_destroy(shadow_results);
+    lwc_string_unref(plain_name);
+    lwc_string_unref(shadow_name);
     destroy_style_case(&ctx);
 }
 
@@ -914,6 +985,21 @@ static void test_cycle_uses_property_fallback(void)
     destroy_style_case(&ctx);
 }
 
+static void test_cyclic_var_fallback_does_not_poison_later_use(void)
+{
+    style_case ctx;
+    const css_computed_style *style = select_style_from_css(
+        "div { --a: var(--b); --b: var(--a);"
+        " width: var(--a, 42px); height: var(--a); }", &ctx);
+
+    expect_length_px("cycle fallback width", style,
+        css_computed_width, CSS_WIDTH_SET, 42);
+    expect_length_type("cycle later height", style,
+        css_computed_height, CSS_HEIGHT_AUTO);
+
+    destroy_style_case(&ctx);
+}
+
 static void test_custom_property_fallback_cycle_is_invalid(void)
 {
     style_case ctx;
@@ -982,9 +1068,11 @@ int main(void)
     test_later_rule_custom_property_after_use();
     test_nested_fallback_uses_final_context();
     test_var_shorthand_keeps_declaration_order();
+    test_reused_custom_property_expansion();
     test_important_custom_property_wins();
     test_invalid_var_overrides_earlier_width();
     test_custom_property_inherits_from_parent_node();
+    test_inherited_custom_property_resolves_with_child_shadow();
     test_inline_style_var_resolution();
     test_imported_sheet_custom_property();
     test_pseudo_element_uses_element_vars();
@@ -992,6 +1080,7 @@ int main(void)
     test_shorthand_fallback_value();
     test_variable_cycle_is_invalid();
     test_cycle_uses_property_fallback();
+    test_cyclic_var_fallback_does_not_poison_later_use();
     test_custom_property_fallback_cycle_is_invalid();
     test_noncyclic_var_can_fallback_from_cycle();
     test_self_reference_in_fallback_is_cycle();

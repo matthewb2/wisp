@@ -117,6 +117,11 @@ struct css_var_lookup {
     uint32_t index;
 };
 
+struct css_var_resolved {
+    lwc_string *name;
+    parserutils_vector *tokens;
+};
+
 static uint32_t css__var_lookup_capacity_for_count(uint32_t count)
 {
     uint32_t capacity = 8;
@@ -212,6 +217,23 @@ static css_error css__tokens_append_ref(
         if (copy.idata != NULL)
             lwc_string_unref(copy.idata);
         return css_error_from_parserutils_error(perr);
+    }
+
+    return CSS_OK;
+}
+
+static css_error css__tokens_append_vector_ref(
+    parserutils_vector *out_tokens,
+    const parserutils_vector *source)
+{
+    css_error error;
+    int32_t ctx = 0;
+    const css_token *token;
+
+    while ((token = parserutils_vector_iterate(source, &ctx)) != NULL) {
+        error = css__tokens_append_ref(out_tokens, token);
+        if (error != CSS_OK)
+            return error;
     }
 
     return CSS_OK;
@@ -543,9 +565,30 @@ static void css__variables_ctx_clear_cycle_cache(css_var_context *ctx)
     ctx->cyclic_capacity = 0;
 }
 
+static void css__variables_ctx_clear_resolved_cache(css_var_context *ctx)
+{
+    if (ctx == NULL)
+        return;
+
+    for (uint32_t i = 0; i < ctx->resolved_count; i++) {
+        lwc_string_unref(ctx->resolved[i].name);
+        css__tokens_destroy(ctx->resolved[i].tokens);
+    }
+
+    free(ctx->resolved);
+    free(ctx->resolved_lookup);
+    ctx->resolved = NULL;
+    ctx->resolved_count = 0;
+    ctx->resolved_capacity = 0;
+    ctx->resolved_lookup = NULL;
+    ctx->resolved_lookup_capacity = 0;
+    ctx->resolved_lookup_valid = true;
+}
+
 static void css__variables_ctx_invalidate_cycles(css_var_context *ctx)
 {
     css__variables_ctx_clear_cycle_cache(ctx);
+    css__variables_ctx_clear_resolved_cache(ctx);
     if (ctx != NULL)
         ctx->cycles_valid = false;
 }
@@ -733,6 +776,158 @@ static css_error css__var_binding_list_append(
     return CSS_OK;
 }
 
+static void css__variables_ctx_rebuild_resolved_lookup(css_var_context *ctx)
+{
+    css_var_lookup *new_lookup;
+    uint32_t capacity;
+
+    if (ctx == NULL)
+        return;
+
+    if (ctx->resolved_count == 0) {
+        free(ctx->resolved_lookup);
+        ctx->resolved_lookup = NULL;
+        ctx->resolved_lookup_capacity = 0;
+        ctx->resolved_lookup_valid = true;
+        return;
+    }
+
+    capacity = css__var_lookup_capacity_for_count(ctx->resolved_count);
+    if (capacity != ctx->resolved_lookup_capacity) {
+        new_lookup = calloc(capacity, sizeof(css_var_lookup));
+        if (new_lookup == NULL) {
+            ctx->resolved_lookup_valid = false;
+            return;
+        }
+
+        free(ctx->resolved_lookup);
+        ctx->resolved_lookup = new_lookup;
+        ctx->resolved_lookup_capacity = capacity;
+    } else {
+        memset(ctx->resolved_lookup, 0,
+            capacity * sizeof(css_var_lookup));
+    }
+
+    for (uint32_t i = 0; i < ctx->resolved_count; i++) {
+        css__var_lookup_insert(ctx->resolved_lookup,
+            ctx->resolved_lookup_capacity, ctx->resolved[i].name, i);
+    }
+
+    ctx->resolved_lookup_valid = true;
+}
+
+static void css__variables_ctx_update_resolved_lookup_after_append(
+    css_var_context *ctx,
+    uint32_t index)
+{
+    uint32_t capacity;
+
+    if (ctx == NULL)
+        return;
+
+    capacity = css__var_lookup_capacity_for_count(ctx->resolved_count);
+    if (ctx->resolved_lookup_valid &&
+            ctx->resolved_lookup != NULL &&
+            capacity == ctx->resolved_lookup_capacity) {
+        css__var_lookup_insert(ctx->resolved_lookup,
+            ctx->resolved_lookup_capacity, ctx->resolved[index].name,
+            index);
+        return;
+    }
+
+    css__variables_ctx_rebuild_resolved_lookup(ctx);
+}
+
+static bool css__variables_ctx_find_resolved_index(
+    const css_var_context *ctx,
+    lwc_string *name,
+    uint32_t *index)
+{
+    if (ctx == NULL)
+        return false;
+
+    if (ctx->resolved_lookup_valid) {
+        if (ctx->resolved_lookup != NULL) {
+            return css__var_lookup_find(ctx->resolved_lookup,
+                ctx->resolved_lookup_capacity, name, index);
+        }
+        if (ctx->resolved_count == 0)
+            return false;
+    }
+
+    for (uint32_t i = 0; i < ctx->resolved_count; i++) {
+        if (ctx->resolved[i].name == name) {
+            if (index != NULL)
+                *index = i;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool css__variables_ctx_find_resolved(
+    const css_var_context *ctx,
+    lwc_string *name,
+    const parserutils_vector **tokens)
+{
+    uint32_t index;
+
+    if (css__variables_ctx_find_resolved_index(ctx, name, &index) == false)
+        return false;
+
+    if (tokens != NULL)
+        *tokens = ctx->resolved[index].tokens;
+
+    return true;
+}
+
+static css_error css__variables_ctx_store_resolved(
+    css_var_context *ctx,
+    lwc_string *name,
+    parserutils_vector *tokens)
+{
+    css_var_resolved *new_resolved;
+    uint32_t index;
+
+    if (css__variables_ctx_find_resolved_index(ctx, name, &index)) {
+        css__tokens_destroy(ctx->resolved[index].tokens);
+        ctx->resolved[index].tokens = tokens;
+        return CSS_OK;
+    }
+
+    if (ctx->resolved_count >= ctx->resolved_capacity) {
+        uint32_t new_cap = ctx->resolved_capacity == 0
+            ? VAR_CTX_INITIAL_CAPACITY
+            : ctx->resolved_capacity * 2;
+
+        new_resolved = realloc(ctx->resolved,
+            new_cap * sizeof(css_var_resolved));
+        if (new_resolved == NULL)
+            return CSS_NOMEM;
+
+        ctx->resolved = new_resolved;
+        ctx->resolved_capacity = new_cap;
+    }
+
+    index = ctx->resolved_count++;
+    ctx->resolved[index].name = lwc_string_ref(name);
+    ctx->resolved[index].tokens = tokens;
+    css__variables_ctx_update_resolved_lookup_after_append(ctx, index);
+
+    return CSS_OK;
+}
+
+static css_var_context *css__variables_ctx_resolved_cache_owner(
+    css_var_context *ctx)
+{
+    /* Empty inherited contexts resolve exactly like their nearest ancestor. */
+    while (ctx != NULL && ctx->count == 0 && ctx->parent != NULL)
+        ctx = ctx->parent;
+
+    return ctx;
+}
+
 static css_error css__variables_ctx_collect_effective(
     const css_var_context *ctx,
     css_var_binding_list *list)
@@ -913,6 +1108,51 @@ static css_error css__variables_ctx_name_is_cyclic(
     return CSS_OK;
 }
 
+static css_error css__resolve_cached_var_value(
+    css_var_context *var_ctx,
+    lwc_string *name,
+    css_var_value *value,
+    parserutils_vector *out_tokens,
+    int depth)
+{
+    const parserutils_vector *cached = NULL;
+    parserutils_vector *resolved = NULL;
+    css_var_context *cache_ctx;
+    parserutils_error perr;
+    css_error error;
+
+    if (depth > CSS_VAR_MAX_DEPTH)
+        return CSS_INVALID;
+
+    cache_ctx = css__variables_ctx_resolved_cache_owner(var_ctx);
+
+    if (css__variables_ctx_find_resolved(cache_ctx, name, &cached)) {
+        return css__tokens_append_vector_ref(out_tokens, cached);
+    }
+
+    perr = parserutils_vector_create(sizeof(css_token), 16, &resolved);
+    if (perr != PARSERUTILS_OK)
+        return css_error_from_parserutils_error(perr);
+
+    error = css__resolve_token_vector(value->tokens, var_ctx, resolved,
+        depth);
+    if (error != CSS_OK)
+        goto cleanup;
+
+    error = css__variables_ctx_store_resolved(cache_ctx, name, resolved);
+    if (error == CSS_OK) {
+        cached = resolved;
+        resolved = NULL;
+        error = css__tokens_append_vector_ref(out_tokens, cached);
+    } else if (error == CSS_NOMEM) {
+        error = css__tokens_append_vector_ref(out_tokens, resolved);
+    }
+
+cleanup:
+    css__tokens_destroy(resolved);
+    return error;
+}
+
 static bool css__token_is_char(const css_token *token, char c)
 {
     size_t len = 0;
@@ -1027,6 +1267,10 @@ static css_error css__handle_var_function(
             CSS_LOG(DEBUG, "var() reference to cyclic custom property '%.*s'",
                 (int)lwc_string_length(var_name), lwc_string_data(var_name));
             error = CSS_INVALID;
+        } else if (initial_len == 0) {
+            /* Start-of-output expansion matches the cached token shape. */
+            error = css__resolve_cached_var_value(var_ctx, var_name,
+                resolved_val, out_tokens, depth + 1);
         } else {
             error = css__resolve_token_vector(resolved_val->tokens, var_ctx,
                 out_tokens, depth + 1);
@@ -1110,6 +1354,7 @@ css_error css__variables_ctx_create(css_var_context **out)
     ctx->refcnt = 1;
     ctx->cycles_valid = true;
     ctx->lookup_valid = true;
+    ctx->resolved_lookup_valid = true;
     *out = ctx;
     return CSS_OK;
 }
@@ -1199,6 +1444,7 @@ void css__variables_ctx_destroy(css_var_context *ctx)
     }
 
     css__variables_ctx_clear_cycle_cache(ctx);
+    css__variables_ctx_clear_resolved_cache(ctx);
     css__variables_ctx_destroy(ctx->parent);
     free(ctx->lookup);
     free(ctx->entries);

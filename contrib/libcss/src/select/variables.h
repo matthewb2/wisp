@@ -18,6 +18,7 @@
  */
 typedef struct css_var_value css_var_value;
 typedef struct css_var_lookup css_var_lookup;
+typedef struct css_var_resolved css_var_resolved;
 
 typedef struct css_var_entry {
     lwc_string *name;   /* e.g. "--primary" */
@@ -34,6 +35,9 @@ typedef struct css_var_entry {
  * Local declarations are kept in append order with a best-effort lookup table
  * for fast name lookups. Inherited values are reached through parent contexts,
  * so child contexts do not copy every inherited custom property.
+ *
+ * Resolved custom property expansions are memoized per context, because an
+ * inherited value can resolve differently when a child shadows one dependency.
  */
 typedef struct css_var_context {
     uint32_t refcnt;
@@ -48,6 +52,12 @@ typedef struct css_var_context {
     uint32_t cyclic_count;
     uint32_t cyclic_capacity;
     bool cycles_valid;
+    css_var_resolved *resolved;
+    uint32_t resolved_count;
+    uint32_t resolved_capacity;
+    css_var_lookup *resolved_lookup;
+    uint32_t resolved_lookup_capacity;
+    bool resolved_lookup_valid;
 } css_var_context;
 
 /**
