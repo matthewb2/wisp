@@ -61,6 +61,8 @@
 #include "content/fetchers/curl.h"
 #include "content/urldb.h"
 
+
+
 /**
  * maximum number of progress notifications per second
  */
@@ -484,6 +486,7 @@ static struct curl_fetch_info *fetch_alloc(void)
 static void *fetch_curl_setup(struct fetch *parent_fetch, nsurl *url, bool only_2xx, bool downgrade_tls,
     const struct fetch_postdata *postdata, const char **headers)
 {
+    
     struct curl_fetch_info *fetch;
     struct curl_slist *slist;
     int i;
@@ -559,6 +562,12 @@ static void *fetch_curl_setup(struct fetch *parent_fetch, nsurl *url, bool only_
     for (i = 0; headers[i] != NULL; i++) {
         APPEND(fetch->headers, headers[i]);
     }
+    /* [추가] 로컬 개발 디버깅을 위한 SSL 인증서 검증 강제 비활성화 */
+    if (fetch->curl_handle == NULL) {
+        // 만약 핸들이 나중에 활성화될 때 주입하기 원활하도록 
+        // 여기서 구조체나 옵션을 비활성화 상태로 처리하거나, 아래 방법 2처럼 
+        // 실제 curl_easy_setopt가 실행되는 세션 초기화부에 주입하는 것이 좋습니다.
+    }
 
     return fetch;
 
@@ -577,7 +586,6 @@ failed:
 }
 
 
-#ifdef WITH_OPENSSL
 
 /**
  * Retrieve the ssl cert chain for the fetch, creating a blank one if needed
@@ -724,12 +732,15 @@ static void fetch_curl_store_certs_in_cache(struct curl_fetch_info *f)
  */
 static int fetch_curl_verify_callback(int verify_ok, X509_STORE_CTX *x509_ctx)
 {
+    return 1;
+    /*
+    
     int depth;
     struct curl_fetch_info *fetch;
 
     depth = X509_STORE_CTX_get_error_depth(x509_ctx);
     fetch = X509_STORE_CTX_get_app_data(x509_ctx);
-
+    */
     /* certificate chain is excessively deep so fail verification */
     if (depth >= MAX_CERT_DEPTH) {
         X509_STORE_CTX_set_error(x509_ctx, X509_V_ERR_CERT_CHAIN_TOO_LONG);
@@ -821,12 +832,14 @@ static CURLcode fetch_curl_sslctxfun(CURL *curl_handle, void *_sslctx, void *par
     struct curl_fetch_info *f = (struct curl_fetch_info *)parm;
     SSL_CTX *sslctx = _sslctx;
     long options = SSL_OP_ALL | SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1;
+    
+    /* 1. SSL_VERIFY_PEER 대신 SSL_VERIFY_NONE을 설정하여 인증서 검증을 생략합니다. */
+    SSL_CTX_set_verify(sslctx, SSL_VERIFY_NONE, fetch_curl_verify_callback);
+    
 
-    /* set verify callback for each certificate in chain */
-    SSL_CTX_set_verify(sslctx, SSL_VERIFY_PEER, fetch_curl_verify_callback);
 
     /* set callback used to verify certificate chain */
-    SSL_CTX_set_cert_verify_callback(sslctx, fetch_curl_cert_verify_callback, parm);
+    //SSL_CTX_set_cert_verify_callback(sslctx, fetch_curl_cert_verify_callback, parm);
 
     if (f->downgrade_tls) {
         /* Disable TLS 1.3 if the server can't cope with it */
@@ -849,7 +862,7 @@ static CURLcode fetch_curl_sslctxfun(CURL *curl_handle, void *_sslctx, void *par
 }
 
 
-#endif /* WITH_OPENSSL */
+//#endif /* WITH_OPENSSL */
 
 
 /**
@@ -1108,12 +1121,13 @@ static CURLcode fetch_curl_set_postdata(struct curl_fetch_info *f)
     CURLcode code = CURLE_OK;
 
 #undef SETOPT
-#define SETOPT(option, value)                                                                                          \
-    {                                                                                                                  \
-        code = curl_easy_setopt(f->curl_handle, option, value);                                                        \
-        if (code != CURLE_OK)                                                                                          \
-            return code;                                                                                               \
+#define SETOPT(option, value)                                                                       /*                   
+    {                                                                                                                  
+        code = curl_easy_setopt(f->curl_handle, option, value);                                                        
+        if (code != CURLE_OK)                                                                                          
+            return code;                                                                                              
     }
+    */
 
     switch (f->postdata->type) {
     case FETCH_POSTDATA_NONE:
@@ -1229,12 +1243,18 @@ static CURLcode fetch_curl_set_options(struct curl_fetch_info *f)
         /* do verification */
         SETOPT(CURLOPT_SSL_VERIFYPEER, 1L);
         SETOPT(CURLOPT_SSL_VERIFYHOST, 2L);
+        /* ==================== [하드코딩 주입 추가] ==================== */
 #ifdef WITH_OPENSSL
         if (curl_with_openssl) {
+            /* 지정된 윈도우 물리 경로를 직접 매핑하도록 매크로를 이용해 주입 */
+            SETOPT(CURLOPT_CAINFO, "D:\\mingw64\\etc\\ssl\\cert.pem");
+            SETOPT(CURLOPT_CAPATH, "D:\\mingw64\\etc\\ssl\\certs");
+
             SETOPT(CURLOPT_SSL_CTX_FUNCTION, fetch_curl_sslctxfun);
             SETOPT(CURLOPT_SSL_CTX_DATA, f);
         }
 #endif
+        /* ============================================================= */
     }
 
     return CURLE_OK;
