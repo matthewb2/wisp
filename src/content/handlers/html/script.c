@@ -617,6 +617,7 @@ static dom_hubbub_error exec_inline_script(html_content *c, dom_node *node, dom_
  */
 dom_hubbub_error html_process_script(void *ctx, dom_node *node)
 {
+    NSLOG(wisp, INFO, "html_process_script called for node %p", node);
     html_content *c = (html_content *)ctx;
     dom_exception exc; /* returned by libdom functions */
     dom_string *src, *mimetype;

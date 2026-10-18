@@ -154,7 +154,6 @@ add_library(wisp ${WISP_LIB_TYPE}
 	${JPEG_SRC}
 	${PNG_SRC}
 	content/handlers/image/svg.c
-
 	#content/handlers/image/video.c # requires gstreamer TODO: replace with ffmpeg/libmpv
 	${WEBP_SRC}
 	${AVIF_SRC}
@@ -165,11 +164,17 @@ add_library(wisp ${WISP_LIB_TYPE}
 	content/handlers/javascript/quickjs/timers.c
 	content/handlers/javascript/quickjs/navigator.c
 	content/handlers/javascript/quickjs/location.c
-	content/handlers/javascript/quickjs/document.c
 	content/handlers/javascript/quickjs/storage.c
 	content/handlers/javascript/quickjs/event_target.c
 	content/handlers/javascript/quickjs/xhr.c
-	content/handlers/text/textplain.c
+	content/handlers/text/textplain.c	
+	# QuickJS-ng generated bindings
+    ${CMAKE_BINARY_DIR}/quickjs/console.c
+    ${CMAKE_BINARY_DIR}/quickjs/window.c
+    ${CMAKE_BINARY_DIR}/quickjs/document.c
+    ${CMAKE_BINARY_DIR}/quickjs/element.c
+    ${CMAKE_BINARY_DIR}/quickjs/node.c
+    ${CMAKE_BINARY_DIR}/quickjs/eventtarget.c
 	desktop/cookie_manager.c
 	desktop/knockout.c
 	desktop/hotlist.c
@@ -228,13 +233,6 @@ add_library(wisp ${WISP_LIB_TYPE}
 	utils/http/strict-transport-security.c
 	utils/nsurl/nsurl.c
 	utils/nsurl/parse.c
-	# QuickJS-ng generated bindings
-    ${CMAKE_BINARY_DIR}/quickjs/console.c
-    ${CMAKE_BINARY_DIR}/quickjs/window.c
-    ${CMAKE_BINARY_DIR}/quickjs/document.c
-    ${CMAKE_BINARY_DIR}/quickjs/element.c
-    ${CMAKE_BINARY_DIR}/quickjs/node.c
-    ${CMAKE_BINARY_DIR}/quickjs/eventtarget.c
 )
 # QuickJS-ng dependencies
 add_dependencies(wisp quickjs_bindings)

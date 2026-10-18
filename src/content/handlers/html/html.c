@@ -616,7 +616,8 @@ static nserror html_create_html_data(html_content *c, const http_parameter *para
     c->scripts = NULL;
     c->jsthread = NULL;
 
-    c->enable_scripting = nsoption_bool(enable_javascript);
+    //c->enable_scripting = nsoption_bool(enable_javascript);
+    c->enable_scripting = true;
     c->base.active = 1; /* The html content itself is active */
 
     if (lwc_intern_string("*", SLEN("*"), &c->universal) != lwc_error_ok) {

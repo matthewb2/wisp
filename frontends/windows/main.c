@@ -136,18 +136,24 @@ static void die(const char *error)
 /**
  * Ensures output logging stream is available
  */
+/**
+ * Ensures output logging stream is available
+ */
 static bool nslog_ensure(FILE *fptr)
 {
     /* mwindows compile flag normally invalidates standard io unless
      *  already redirected
      */
     if (_get_osfhandle(fileno(fptr)) == -1) {
-        AllocConsole();
+        /* 부모 터미널(PowerShell/CMD)이 존재하면 그곳에 콘솔을 붙이고, 
+         * 없거나 실패할 경우에만 새 콘솔 창을 생성합니다. */
+        if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+            AllocConsole();
+        }
         freopen("CONOUT$", "w", fptr);
     }
     return true;
 }
-
 /**
  * Set option defaults for windows frontend
  *
