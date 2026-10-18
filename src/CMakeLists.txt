@@ -229,8 +229,12 @@ add_library(wisp ${WISP_LIB_TYPE}
 	utils/nsurl/nsurl.c
 	utils/nsurl/parse.c
 	# QuickJS-ng generated bindings
-	${CMAKE_BINARY_DIR}/quickjs/console.c
-	${CMAKE_BINARY_DIR}/quickjs/window.c
+    ${CMAKE_BINARY_DIR}/quickjs/console.c
+    ${CMAKE_BINARY_DIR}/quickjs/window.c
+    ${CMAKE_BINARY_DIR}/quickjs/document.c
+    ${CMAKE_BINARY_DIR}/quickjs/element.c
+    ${CMAKE_BINARY_DIR}/quickjs/node.c
+    ${CMAKE_BINARY_DIR}/quickjs/eventtarget.c
 )
 # QuickJS-ng dependencies
 add_dependencies(wisp quickjs_bindings)

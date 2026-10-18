@@ -36,6 +36,11 @@ file(GLOB WEBIDL_SOURCES ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/Web
 # Generated binding sources
 set(QUICKJS_GEN_SOURCES
     ${QUICKJS_GEN_DIR}/console.c
+    ${QUICKJS_GEN_DIR}/window.c
+    ${QUICKJS_GEN_DIR}/document.c
+    ${QUICKJS_GEN_DIR}/element.c
+    ${QUICKJS_GEN_DIR}/node.c
+    ${QUICKJS_GEN_DIR}/eventtarget.c
 )
 
 # Custom command to generate console.c binding
@@ -63,10 +68,57 @@ add_custom_command(
     COMMENT "Generating QuickJS Window binding"
 )
 
+# Generate document.c
+add_custom_command(
+    OUTPUT ${QUICKJS_GEN_DIR}/document.c
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/utils/qjs_binding_generator.py
+            ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/WebIDL/dom.idl
+            -o ${QUICKJS_GEN_DIR}
+            --interface Document
+    DEPENDS ${CMAKE_SOURCE_DIR}/utils/qjs_binding_generator.py
+            ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/WebIDL/dom.idl
+    COMMENT "Generating QuickJS Document binding"
+)
+
+# Generate element.c
+add_custom_command(
+    OUTPUT ${QUICKJS_GEN_DIR}/element.c
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/utils/qjs_binding_generator.py
+            ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/WebIDL/dom.idl
+            -o ${QUICKJS_GEN_DIR}
+            --interface Element
+    DEPENDS ${CMAKE_SOURCE_DIR}/utils/qjs_binding_generator.py
+            ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/WebIDL/dom.idl
+    COMMENT "Generating QuickJS Element binding"
+)
+
+# Generate node.c
+add_custom_command(
+    OUTPUT ${QUICKJS_GEN_DIR}/node.c
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/utils/qjs_binding_generator.py
+            ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/WebIDL/dom.idl
+            -o ${QUICKJS_GEN_DIR}
+            --interface Node
+    DEPENDS ${CMAKE_SOURCE_DIR}/utils/qjs_binding_generator.py
+            ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/WebIDL/dom.idl
+    COMMENT "Generating QuickJS Node binding"
+)
+
+# Generate eventtarget.c
+add_custom_command(
+    OUTPUT ${QUICKJS_GEN_DIR}/eventtarget.c
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/utils/qjs_binding_generator.py
+            ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/WebIDL/dom.idl
+            -o ${QUICKJS_GEN_DIR}
+            --interface EventTarget
+    DEPENDS ${CMAKE_SOURCE_DIR}/utils/qjs_binding_generator.py
+            ${CMAKE_SOURCE_DIR}/src/content/handlers/javascript/WebIDL/dom.idl
+    COMMENT "Generating QuickJS EventTarget binding"
+)
+
 # Custom target to drive generation
 add_custom_target(quickjs_bindings
-    DEPENDS ${QUICKJS_GEN_DIR}/console.c
-            ${QUICKJS_GEN_DIR}/window.c
+    DEPENDS ${QUICKJS_GEN_SOURCES}
 )
 
 # Include directories for generated files
