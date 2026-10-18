@@ -48,6 +48,29 @@
 #include "windows/plot.h"
 #include "windows/windbg.h"
 
+
+/* 프레임워크 필터를 거치지 않고 터미널과 디버거에 무조건 꽂아버리는 강제 출력 헬퍼 */
+static void force_log(const char *format, ...)
+{
+    char buf[2048];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+
+    // 1. 터미널 표준 출력에 강제 쓰기 및 플러시
+    printf("%s\n", buf);
+    fflush(stdout);
+
+#ifdef _WIN32
+    // 2. Windows 디버그 스트림으로 안전하게 전송
+    OutputDebugStringA(buf);
+    OutputDebugStringA("\n");
+#endif
+}
+
+
+
 static const char windowclassname_corewindow[] = "nswscorewindowwindow";
 
 /**
@@ -311,11 +334,35 @@ static LRESULT nsw32_corewindow_close(struct nsw32_corewindow *nsw32_cw)
  */
 static LRESULT CALLBACK nsw32_window_corewindow_event_callback(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
+    // [긴급 디버그] 모든 메시지를 강제로 출력
+    // 특정 메시지(예: 마우스 이동)가 너무 많으면 필터링이 필요할 수 있습니다.
+    if (msg != WM_MOUSEMOVE && msg != WM_SETCURSOR && msg != WM_PAINT) {
+        force_log("CALLBACK MSG RECEIVED: 0x%04X", msg);
+    }
+    
     struct nsw32_corewindow *nsw32_cw;
 
     nsw32_cw = GetProp(hwnd, TEXT("CoreWnd"));
     if (nsw32_cw != NULL) {
         switch (msg) {
+            
+            /* 한글 및 다국어 입력 처리를 위해 추가 */
+        case WM_IME_CHAR:
+            /* wparam은 유니코드(UTF-16) 문자입니다 */
+            NSLOG(wisp, INFO, "WM_IME_CHAR received: 0x%04X", (unsigned int)wparam);
+            if (nsw32_cw->key != NULL) {
+                /* 필요에 따라 wparam을 nsw32_cw->key가 기대하는 형식으로 변환하여 호출 */
+                nsw32_cw->key(nsw32_cw, (uint32_t)wparam); 
+            }
+            return 0;
+
+        case WM_CHAR:
+            /* 일반적인 ASCII/ANSI 문자 처리 */
+            if (nsw32_cw->key != NULL) {
+                nsw32_cw->key(nsw32_cw, (uint32_t)wparam);
+            }
+            return 0;
+            
         case WM_PAINT: /* redraw the exposed part of the window */
             return nsw32_corewindow_paint(nsw32_cw, hwnd);
 
@@ -463,6 +510,7 @@ struct core_window_table *win32_core_window_table = &nsw32_cw_cb_table;
 /* exported function documented nsw32/corewindow.h */
 nserror nsw32_corewindow_init(HINSTANCE hInstance, HWND hWndParent, struct nsw32_corewindow *nsw32_cw)
 {
+     force_log("--- nsw32_corewindow_init START ---");
     DWORD dwStyle;
 
     /* setup the core window callback table */
@@ -509,6 +557,9 @@ nserror nsw32_corewindow_fini(struct nsw32_corewindow *nsw32_cw)
 /* exported interface documented in windows/corewindow.h */
 nserror nsw32_create_corewindow_class(HINSTANCE hInstance)
 {
+    force_log("DEBUG: nsw32_create_corewindow_class CALLED");
+    NSLOG(wisp, DEBUG, "nsw32_create_corewindow_class CALLED");
+    
     nserror ret = NSERROR_OK;
     WNDCLASSEX wc;
 
