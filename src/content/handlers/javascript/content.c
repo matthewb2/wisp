@@ -64,6 +64,8 @@ static nserror javascript_create(const content_handler *handler, lwc_string *imi
 
 static bool javascript_convert(struct content *c)
 {
+    fprintf(stderr, "[JS HANDLER DEBUG] javascript_convert CALLED for script content!\n");
+    
     content_set_ready(c);
     content_set_done(c);
 

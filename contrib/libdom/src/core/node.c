@@ -1039,6 +1039,10 @@ dom_exception _dom_node_remove_child(dom_node_internal *node, dom_node_internal 
  */
 dom_exception _dom_node_append_child(dom_node_internal *node, dom_node_internal *new_child, dom_node_internal **result)
 {
+    // [디버그 로그 추가]
+    fprintf(stderr, "[LIBDOM DEBUG] _dom_node_append_child ENTER -> parent: %p, new_child: %p\n", 
+            (void*)node, (void*)new_child);
+            
     /* This is just a veneer over insert_before */
     return dom_node_insert_before(node, new_child, NULL, result);
 }

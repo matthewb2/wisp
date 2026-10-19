@@ -559,29 +559,37 @@ static dom_hubbub_error exec_src_script(html_content *c, dom_node *node, dom_str
 
 static dom_hubbub_error exec_inline_script(html_content *c, dom_node *node, dom_string *mimetype)
 {
+    fprintf(stderr, "[WISP SCRIPT DEBUG] exec_inline_script ENTER -> node: %p\n", (void*)node);
+    
     dom_string *script;
     dom_exception exc; /* returned by libdom functions */
     struct lwc_string_s *lwcmimetype;
     script_handler_t *script_handler;
     struct html_script *nscript;
-
-    /* does not appear to be a src so script is inline content */
+    
+    /* 1. 텍스트 콘텐츠 가져오기 */
     exc = dom_node_get_text_content(node, &script);
     if ((exc != DOM_NO_ERR) || (script == NULL)) {
+        fprintf(stderr, "[WISP SCRIPT DEBUG] WARNING: Failed to get text content or script is NULL (exc: %d)\n", exc);
         return DOM_HUBBUB_OK; /* no contents, skip */
     }
+    
+    /* 2. 성공적으로 가져왔으므로 안전하게 내용 출력 */
+    const char *script_text = dom_string_data(script);
+    size_t script_len = dom_string_length(script);
+    fprintf(stderr, "[WISP SCRIPT DEBUG] Extracted Inline Script Content (len: %zu):\n%.*s\n", 
+            script_len, (int)script_len, script_text);
 
     nscript = html_process_new_script(c, mimetype, HTML_SCRIPT_INLINE);
     if (nscript == NULL) {
         dom_string_unref(script);
-
         content_broadcast_error(&c->base, NSERROR_NOMEM, NULL);
         return DOM_HUBBUB_NOMEM;
     }
 
     nscript->data.string = script;
     nscript->already_started = true;
-
+        
     /* ensure script handler for content type */
     exc = dom_string_intern(mimetype, &lwcmimetype);
     if (exc != DOM_NO_ERR) {
@@ -617,6 +625,8 @@ static dom_hubbub_error exec_inline_script(html_content *c, dom_node *node, dom_
  */
 dom_hubbub_error html_process_script(void *ctx, dom_node *node)
 {
+    fprintf(stderr, "[WISP SCRIPT DEBUG] html_process_script ENTER -> node: %p\n", (void*)node);
+    
     NSLOG(wisp, INFO, "html_process_script called for node %p", node);
     html_content *c = (html_content *)ctx;
     dom_exception exc; /* returned by libdom functions */
