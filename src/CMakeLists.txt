@@ -174,8 +174,7 @@ add_library(wisp ${WISP_LIB_TYPE}
     ${CMAKE_BINARY_DIR}/quickjs/document.c
     ${CMAKE_BINARY_DIR}/quickjs/element.c
     ${CMAKE_BINARY_DIR}/quickjs/node.c
-    ${CMAKE_BINARY_DIR}/quickjs/eventtarget.c
-	desktop/cookie_manager.c
+    desktop/cookie_manager.c
 	desktop/knockout.c
 	desktop/hotlist.c
 	desktop/plot_style.c
