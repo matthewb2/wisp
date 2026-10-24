@@ -53,14 +53,23 @@
 typedef bool(script_handler_t)(struct jsthread *jsthread, const uint8_t *data, size_t size, const char *name);
 
 
-static script_handler_t *select_script_handler(content_type ctype)
+script_handler_t *select_script_handler(content_type type)
 {
-    switch (ctype) {
+    script_handler_t *handler = NULL;
+
+    switch (type) {
     case CONTENT_JS:
-        return js_exec;
+        /* QuickJS 바인딩의 실제 실행 함수인 js_exec 매핑 */
+        handler = js_exec;
+        fprintf(stderr, "[WISP SCRIPT DEBUG] select_script_handler: CONTENT_JS matched -> returning js_exec (%p)\n", (void*)handler);
+        break;
     default:
-        return NULL;
+        fprintf(stderr, "[WISP SCRIPT DEBUG] select_script_handler: unknown content_type=%d\n", type);
+        handler = NULL;
+        break;
     }
+
+    return handler;
 }
 
 void script_resume_conversion_cb(void *p)
@@ -594,29 +603,48 @@ static dom_hubbub_error exec_inline_script(html_content *c, dom_node *node, dom_
     exc = dom_string_intern(mimetype, &lwcmimetype);
     if (exc != DOM_NO_ERR) {
         NSLOG(wisp, WARNING, "exec_inline_script: dom_string_intern failed");
+        fprintf(stderr, "[WISP SCRIPT DEBUG] WARNING: dom_string_intern failed (exc: %d)\n", exc);
         return DOM_HUBBUB_DOM;
     }
 
     content_type ctype = content_factory_type_from_mime_type(lwcmimetype);
+    
     NSLOG(wisp, INFO, "exec_inline_script: lwcmimetype='%s' -> content_type=%d (CONTENT_JS=%d)",
         lwc_string_data(lwcmimetype), ctype, CONTENT_JS);
+    fprintf(stderr, "[WISP SCRIPT DEBUG] lwcmimetype='%s' -> content_type=%d (CONTENT_JS=%d)\n",
+        lwc_string_data(lwcmimetype), ctype, CONTENT_JS);
 
+    /* 핸들러 선택 및 올바른 핸들러인지 확인하는 디버깅 로그 추가 */
     script_handler = select_script_handler(ctype);
+    fprintf(stderr, "[WISP SCRIPT DEBUG] select_script_handler(ctype=%d) returned handler: %p (Expected JS Handler type/match check)\n", 
+            ctype, (void*)script_handler);
+
     lwc_string_unref(lwcmimetype);
 
-    NSLOG(wisp, INFO, "exec_inline_script: script_handler=%p, jsthread=%p", script_handler, c->jsthread);
+    NSLOG(wisp, INFO, "exec_inline_script: script_handler=%p, jsthread=%p", (void*)script_handler, (void*)c->jsthread);
+    fprintf(stderr, "[WISP SCRIPT DEBUG] script_handler=%p, jsthread=%p\n", (void*)script_handler, (void*)c->jsthread);
 
     if (script_handler != NULL) {
         NSLOG(
             wisp, INFO, "exec_inline_script: calling script_handler with %zu bytes", dom_string_byte_length(script));
+        
+        /* js_exec의 실제 메모리 주소와 비교 로깅 */
+        fprintf(stderr, "[WISP SCRIPT DEBUG] ----------------------------------------\n");
+        fprintf(stderr, "[WISP SCRIPT DEBUG] script_handler ptr : %p\n", (void*)script_handler);
+        fprintf(stderr, "[WISP SCRIPT DEBUG] js_exec literal ptr    : %p\n", (void*)js_exec);
+        fprintf(stderr, "[WISP SCRIPT DEBUG] ----------------------------------------\n");
+
+        fprintf(stderr, "[WISP SCRIPT DEBUG] calling script_handler with %zu bytes -> About to invoke handler function at %p\n", 
+                dom_string_byte_length(script), (void*)script_handler);
+        
         script_handler(
             c->jsthread, (const uint8_t *)dom_string_data(script), dom_string_byte_length(script), "?inline script?");
-    } else {
-        NSLOG(wisp, WARNING, "exec_inline_script: script_handler is NULL, skipping execution");
+        
+        fprintf(stderr, "[WISP SCRIPT DEBUG] script_handler execution finished successfully.\n");
     }
+    
     return DOM_HUBBUB_OK;
 }
-
 
 /**
  * process script node parser callback

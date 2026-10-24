@@ -127,6 +127,7 @@ static void jsheap_unref(jsheap *heap)
 /* exported interface documented in js.h */
 void js_initialise(void)
 {
+    fprintf(stderr, "[WISP JS_BINDINGS DEBUG] js_initialise called (not yet implemented)\n");
     NSLOG(wisp, INFO, "QuickJS-ng JavaScript engine initialised");
 }
 
@@ -145,6 +146,7 @@ void js_finalise(void)
 /* exported interface documented in js.h */
 nserror js_newheap(int timeout, jsheap **heap)
 {
+    fprintf(stderr, "[WISP JS_BINDINGS DEBUG] js_newheap called (not yet implemented)\n");
     jsheap *h;
 
     h = calloc(1, sizeof(*h));
@@ -197,6 +199,7 @@ void js_destroyheap(jsheap *heap)
 /* exported interface documented in js.h */
 nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **thread)
 {
+    fprintf(stderr, "[WISP JS_BINDINGS DEBUG] js_newthread called (not yet implemented)\n");
     jsthread *t;
 
     if (heap == NULL) {
@@ -390,24 +393,28 @@ void js_destroythread(jsthread *thread)
     jsheap_unref(heap);
 }
 
-
-/* exported interface documented in js.h */
 bool js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *name)
 {
+    fprintf(stderr, "[WISP JS_EXEC ENTRY] thread: %p, txt: %p, txtlen: %zu, name: %s\n", 
+            (void*)thread, (const void*)txt, txtlen, name ? name : "<NULL>");
+        
     JSValue result;
     bool success = true;
     char stack_buf[1024];
     char *term_txt = NULL;
 
     if (thread == NULL || thread->ctx == NULL || thread->closed) {
+        fprintf(stderr, "[WISP JS_EXEC ERROR] Attempted to execute JS on invalid/closed thread\n");
         NSLOG(wisp, WARNING, "Attempted to execute JS on invalid/closed thread");
         return false;
     }
 
     if (txt == NULL || txtlen == 0) {
+        fprintf(stderr, "[WISP JS_EXEC INFO] txt is NULL or txtlen is 0, skipping\n");
         return true; /* Nothing to execute */
     }
 
+    fprintf(stderr, "[WISP JS_EXEC INFO] Executing JS: %s (length %zu)\n", name ? name : "<anonymous>", txtlen);
     NSLOG(wisp, INFO, "Executing JS: %s (length %zu)", name ? name : "<anonymous>", txtlen);
 
     /* QuickJS-ng requires the input to be null-terminated at txt[txtlen] */
@@ -418,6 +425,7 @@ bool js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *na
     } else {
         term_txt = malloc(txtlen + 1);
         if (term_txt == NULL) {
+            fprintf(stderr, "[WISP JS_EXEC ERROR] Failed to allocate memory for JS execution\n");
             NSLOG(wisp, ERROR, "Failed to allocate memory for JS execution");
             return false;
         }
@@ -425,12 +433,14 @@ bool js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *na
         term_txt[txtlen] = '\0';
     }
 
+    fprintf(stderr, "[WISP JS_EXEC INFO] Calling JS_Eval...\n");
     result = JS_Eval(thread->ctx, term_txt, txtlen, name ? name : "<script>", JS_EVAL_TYPE_GLOBAL);
 
     if (JS_IsException(result)) {
         JSValue exc = JS_GetException(thread->ctx);
         const char *exc_str = JS_ToCString(thread->ctx, exc);
 
+        fprintf(stderr, "[WISP JS_EXEC ERROR] JavaScript exception caught: %s\n", exc_str ? exc_str : "<unknown error>");
         NSLOG(wisp, WARNING, "JavaScript error: %s", exc_str ? exc_str : "<unknown error>");
 
         if (exc_str) {
@@ -438,6 +448,8 @@ bool js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *na
         }
         JS_FreeValue(thread->ctx, exc);
         success = false;
+    } else {
+        fprintf(stderr, "[WISP JS_EXEC INFO] JS_Eval completed successfully without exception.\n");
     }
 
     JS_FreeValue(thread->ctx, result);
@@ -446,6 +458,7 @@ bool js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *na
         free(term_txt);
     }
 
+    fprintf(stderr, "[WISP JS_EXEC EXIT] success: %d\n", success);
     return success;
 }
 

@@ -277,25 +277,27 @@ qjs_init_document(JSContext *ctx)
         }
     }
     
+    /* Document 프로토타입 객체 생성 및 메서드 등록 */
     JSValue proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, proto, 
                                js_document_proto_funcs, 
                                sizeof(js_document_proto_funcs) / sizeof(js_document_proto_funcs[0]));
     JS_SetClassProto(ctx, js_document_class_id, proto);
     
-    /* Window: attach methods to global and set self-references */
-    if (strcmp("Document", "Window") == 0) {
-        JSValue global_obj = JS_GetGlobalObject(ctx);
-        JS_SetPropertyFunctionList(ctx, global_obj, 
-                                   js_document_proto_funcs, 
-                                   sizeof(js_document_proto_funcs) / sizeof(js_document_proto_funcs[0]));
-        JS_SetPropertyStr(ctx, global_obj, "window", JS_DupValue(ctx, global_obj));
-        JS_SetPropertyStr(ctx, global_obj, "self", JS_DupValue(ctx, global_obj));
-        JS_SetPropertyStr(ctx, global_obj, "parent", JS_DupValue(ctx, global_obj));
-        JS_SetPropertyStr(ctx, global_obj, "top", JS_DupValue(ctx, global_obj));
-        JS_SetPropertyStr(ctx, global_obj, "frames", JS_DupValue(ctx, global_obj));
-        JS_FreeValue(ctx, global_obj);
-    }
+    /* 전역 객체 가져오기 */
+    JSValue global_obj = JS_GetGlobalObject(ctx);
+    
+    /* Document 클래스의 실제 인스턴스 생성 (이것이 자바스크립트의 전역 'document'가 됨) */
+    JSValue doc_obj = JS_NewObjectClass(ctx, js_document_class_id);
+    
+    /* 전역 객체에 "document" 프로퍼티로 바인딩 */
+    JS_SetPropertyStr(ctx, global_obj, "document", doc_obj);
+    
+    /* (참고) 만약 window나 self 등의 전역 참조도 함께 세팅하려면 아래와 같이 처리 가능합니다 */
+    JS_SetPropertyStr(ctx, global_obj, "window", JS_DupValue(ctx, global_obj));
+    JS_SetPropertyStr(ctx, global_obj, "self", JS_DupValue(ctx, global_obj));
+
+    JS_FreeValue(ctx, global_obj);
     
     return 0;
 }

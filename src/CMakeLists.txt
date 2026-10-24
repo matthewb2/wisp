@@ -169,11 +169,11 @@ add_library(wisp ${WISP_LIB_TYPE}
 	content/handlers/javascript/quickjs/xhr.c
 	content/handlers/text/textplain.c	
 	# QuickJS-ng generated bindings
-    ${CMAKE_BINARY_DIR}/quickjs/console.c
-    ${CMAKE_BINARY_DIR}/quickjs/window.c
-    ${CMAKE_BINARY_DIR}/quickjs/document.c
-    ${CMAKE_BINARY_DIR}/quickjs/element.c
-    ${CMAKE_BINARY_DIR}/quickjs/node.c
+    content/handlers/javascript/quickjs/console.c
+    content/handlers/javascript/quickjs/window.c
+    content/handlers/javascript/quickjs/document.c
+    content/handlers/javascript/quickjs/element.c
+    content/handlers/javascript/quickjs/node.c
     desktop/cookie_manager.c
 	desktop/knockout.c
 	desktop/hotlist.c
