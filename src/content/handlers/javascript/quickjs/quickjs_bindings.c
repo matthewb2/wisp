@@ -44,6 +44,10 @@
 #include "content/handlers/javascript/quickjs/window.h"
 #include "content/handlers/javascript/quickjs/xhr.h"
 
+/* 기존 초기화 함수 선언부 근처에 추가 */
+extern int qjs_init_document(JSContext *ctx);
+extern int qjs_init_element(JSContext *ctx); /* 이 줄을 추가해주세요 */
+
 /**
  * JavaScript heap structure.
  *
@@ -258,6 +262,12 @@ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **th
     /* Initialize Document */
     if (qjs_init_document(t->ctx) < 0) {
         NSLOG(wisp, ERROR, "Failed to initialize QuickJS document");
+    }
+    
+
+    /* Element 바인딩 초기화 추가 */
+    if (qjs_init_element(t->ctx) < 0) {
+        NSLOG(wisp, ERROR, "Failed to initialize QuickJS element");
     }
 
     /* Initialize Storage (localStorage, sessionStorage) */

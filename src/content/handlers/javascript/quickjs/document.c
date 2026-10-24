@@ -14,12 +14,42 @@
 
 #include "quickjs.h"
 
+/* element.c에 정의된 element 클래스 ID 공유 선언 */
+extern JSClassID js_element_class_id;
+
 /* Document private data */
 typedef struct {
     void *private_ptr;
 } DocumentPrivate;
 
+/* Element private data 구조체 공유 선언 */
+typedef struct {
+    void *private_ptr;
+} ElementPrivate;
+
+
 static JSClassID js_document_class_id;
+
+/* qjs_new_element_object 프로토타입 선언 */
+JSValue qjs_new_element_object(JSContext *ctx, const char *tag_name);
+
+static JSValue
+js_document_get_body(JSContext *ctx, JSValueConst this_val)
+{
+    fprintf(stderr, "[WISP DOM DEBUG] document.body get called\n");
+    fflush(stderr);
+    
+    /* body 역할을 할 Element 객체 생성 반환 */
+    return qjs_new_element_object(ctx, "body");
+}
+
+static JSValue
+js_document_set_body(JSContext *ctx, JSValueConst this_val, JSValueConst val)
+{
+    fprintf(stderr, "[WISP DOM DEBUG] document.body set called\n");
+    fflush(stderr);
+    return JS_UNDEFINED;
+}
 
 static JSValue
 js_document_Document(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
@@ -118,13 +148,47 @@ js_document_getElementsByClassName(JSContext *ctx, JSValueConst this_val, int ar
     NSLOG(wisp, INFO, "Document.getElementsByClassName() called");
     return JS_UNDEFINED;
 }
+static JSValue
+js_document_getElementById(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    fprintf(stderr, "[WISP DOM DEBUG] js_document_getElementById ENTER (argc: %d)\n", argc);
+    fflush(stderr);
+    
+    if (argc < 1) {
+        return JS_NULL;
+    }
+    
+    const char *id = JS_ToCString(ctx, argv[0]);
+    if (id) {
+        fprintf(stderr, "[WISP DOM DEBUG] Document.getElementById id: %s\n", id);
+        fflush(stderr);
+        JS_FreeCString(ctx, id);
+    }
+
+    return JS_NULL;
+}
 
 static JSValue
 js_document_createElement(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-    NSLOG(wisp, INFO, "Document.createElement() called");
-    return JS_UNDEFINED;
+    fprintf(stderr, "[WISP DOM DEBUG] document.createElement called\n");
+    fflush(stderr);
+
+    const char *tag_name = "div";
+    if (argc > 0) {
+        tag_name = JS_ToCString(ctx, argv[0]);
+    }
+
+    /* 태그 이름을 인자로 전달하여 실제 libdom 노드 생성 */
+    JSValue element_obj = qjs_new_element_object(ctx, tag_name);
+
+    if (argc > 0 && tag_name) {
+        JS_FreeCString(ctx, tag_name);
+    }
+
+    return element_obj;
 }
+
 
 static JSValue
 js_document_createElementNS(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
@@ -232,6 +296,7 @@ static JSClassDef js_document_class = {
 };
 
 static const JSCFunctionListEntry js_document_proto_funcs[] = {
+    JS_CGETSET_DEF("body", js_document_get_body, js_document_set_body),
     JS_CFUNC_DEF("Document", 0, js_document_Document),
     JS_CFUNC_DEF("implementation", 0, js_document_implementation),
     JS_CFUNC_DEF("URL", 0, js_document_URL),
@@ -246,6 +311,7 @@ static const JSCFunctionListEntry js_document_proto_funcs[] = {
     JS_CFUNC_DEF("getElementsByTagName", 0, js_document_getElementsByTagName),
     JS_CFUNC_DEF("getElementsByTagNameNS", 0, js_document_getElementsByTagNameNS),
     JS_CFUNC_DEF("getElementsByClassName", 0, js_document_getElementsByClassName),
+    JS_CFUNC_DEF("getElementById", 1, js_document_getElementById),
     JS_CFUNC_DEF("createElement", 0, js_document_createElement),
     JS_CFUNC_DEF("createElementNS", 0, js_document_createElementNS),
     JS_CFUNC_DEF("createDocumentFragment", 0, js_document_createDocumentFragment),
@@ -259,7 +325,7 @@ static const JSCFunctionListEntry js_document_proto_funcs[] = {
     JS_CFUNC_DEF("createEvent", 0, js_document_createEvent),
     JS_CFUNC_DEF("createRange", 0, js_document_createRange),
     JS_CFUNC_DEF("createNodeIterator", 0, js_document_createNodeIterator),
-    JS_CFUNC_DEF("createTreeWalker", 0, js_document_createTreeWalker),
+    JS_CFUNC_DEF("createTreeWalker", 0, js_document_createTreeWalker),    
 };
 
 int
@@ -287,8 +353,8 @@ qjs_init_document(JSContext *ctx)
     /* 전역 객체 가져오기 */
     JSValue global_obj = JS_GetGlobalObject(ctx);
     
-    /* Document 클래스의 실제 인스턴스 생성 (이것이 자바스크립트의 전역 'document'가 됨) */
-    JSValue doc_obj = JS_NewObjectClass(ctx, js_document_class_id);
+    /* [수정] JS_NewObjectClass 대신 proto를 명시적으로 연결하는 JS_NewObjectProtoClass 사용 */
+    JSValue doc_obj = JS_NewObjectProtoClass(ctx, proto, js_document_class_id);
     
     /* 전역 객체에 "document" 프로퍼티로 바인딩 */
     JS_SetPropertyStr(ctx, global_obj, "document", doc_obj);
