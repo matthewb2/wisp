@@ -1588,7 +1588,6 @@ static nserror
 html_open(struct content *c, struct browser_window *bw, struct content *page, struct object_params *params)
 {
     html_content *html = (html_content *)c;
-    nserror error; /* [해결 1] error 변수 선언 추가 */
 
     html->bw = bw;
     html->page = (html_content *)page;
@@ -1603,27 +1602,6 @@ html_open(struct content *c, struct browser_window *bw, struct content *page, st
 
     html_object_open_objects(html, bw);
 
-    /* [해결 2] 자바스크립트 스레드 생성 및 바인딩 */
-    if (html->enable_scripting && html->jsthread == NULL) {
-        jsheap *heap = NULL;
-        
-        /* 
-         * 만약 브라우저 창(bw)에 힙을 가져오는 함수가 없다면, 
-         * 새로 힙을 생성하거나 창의 프라이빗 데이터에서 힙을 조회할 수 있습니다.
-         * 예시로 새로운 힙을 생성(또는 창별 관리 힙 조회)하는 구문:
-         */
-        error = js_newheap(5000, &heap); /* 5초 타임아웃 힙 생성 예시 */
-        if (error == NSERROR_OK && heap != NULL) {
-            /* 
-             * win_priv에는 bw를, doc_priv에는 html을 정확히 주입합니다.
-             */
-            error = js_newthread(heap, html, html, &html->jsthread);
-            if (error != NSERROR_OK) {
-                NSLOG(wisp, ERROR, "Failed to create JavaScript thread for HTML content");
-                js_destroyheap(heap);
-            }
-        }
-    }
 
     return NSERROR_OK;
 }

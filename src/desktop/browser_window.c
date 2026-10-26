@@ -1501,19 +1501,8 @@ static nserror browser_window_callback(hlcache_handle *c, const hlcache_event *e
     } break;
 
     case CONTENT_MSG_GETTHREAD: {
-        /* only the content object created by the browser
-         * window requires a new javascript thread object
-         */
-        jsthread *thread;
-        assert(bw->loading_content == c);
-
-        if (js_newthread(bw->jsheap, bw, hlcache_handle_get_content(c), &thread) == NSERROR_OK) {
-            /* The content which is requesting the thread
-             * is required to keep hold of it and
-             * to destroy it when it is finished with it.
-             */
-            *(event->data.jsthread) = thread;
-        }
+        /* fixed bugs*/
+        
     } break;
 
     case CONTENT_MSG_GETDIMS: {
