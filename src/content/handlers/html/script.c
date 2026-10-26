@@ -653,10 +653,23 @@ static dom_hubbub_error exec_inline_script(html_content *c, dom_node *node, dom_
  */
 dom_hubbub_error html_process_script(void *ctx, dom_node *node)
 {
-    fprintf(stderr, "[WISP SCRIPT DEBUG] html_process_script ENTER -> node: %p\n", (void*)node);
-    
-    NSLOG(wisp, INFO, "html_process_script called for node %p", node);
     html_content *c = (html_content *)ctx;
+    
+    /* [핵심] 사용하기 전에 먼저 변수를 선언하고 캐스팅합니다 */
+    html_content *html = (html_content *)ctx;
+
+    /* 이제 안전하게 출력할 수 있습니다 */
+    fprintf(stderr, "[WISP SCRIPT DEBUG] html_process_script called!\n");
+    fprintf(stderr, "  -> html_content (ctx): %p\n", (void *)html);
+    if (html != NULL) {
+        fprintf(stderr, "  -> html->document: %p\n", (void *)html->document);
+        fprintf(stderr, "  -> html->bw (browser_window): %p\n", (void *)html->bw);
+    } else {
+        fprintf(stderr, "  -> ERROR: html context is NULL!\n");
+    }
+    fflush(stderr);
+    
+    
     dom_exception exc; /* returned by libdom functions */
     dom_string *src, *mimetype;
     dom_hubbub_error err = DOM_HUBBUB_OK;

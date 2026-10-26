@@ -140,7 +140,7 @@ nserror wisp_init(const char *store_path)
         NSLOG(wisp, ERROR, "corestrings_init failed (%s)", messages_get_errorcode(ret));
         return ret;
     }
-
+    
     /* Initialize urldb */
     NSLOG(wisp, INFO, "init urldb");
     ret = urldb_init();

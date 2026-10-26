@@ -14,6 +14,39 @@
 
 #include "quickjs.h"
 
+#include <dom/dom.h>
+#include <dom/html/html_document.h>
+#include <dom/core/node.h>
+#include <dom/core/exceptions.h>
+#include <wisp/browser_window.h>
+#include <wisp/content/hlcache.h>
+#include <wisp/content/content.h>
+#include <wisp/content/handlers/html/private.h> // struct html_content 정의 포함
+#include <wisp/content/handlers/html/html.h>     // html_get_document 선언 포함
+
+/**
+ * JavaScript thread structure.
+ *
+ * Maps to QuickJS's JSContext - one per browsing context.
+ */
+ 
+struct jsheap {
+    JSRuntime *rt;
+    int timeout;
+    int refcount;
+};
+
+
+struct jsthread {
+    struct jsheap *heap; // <--- struct 키워드 추가
+    JSContext *ctx;
+    bool closed;
+    void *win_priv;
+    void *doc_priv;
+};
+
+
+
 /* element.c에 정의된 element 클래스 ID 공유 선언 */
 extern JSClassID js_element_class_id;
 
@@ -33,14 +66,14 @@ static JSClassID js_document_class_id;
 /* qjs_new_element_object 프로토타입 선언 */
 JSValue qjs_new_element_object(JSContext *ctx, const char *tag_name);
 
+
 static JSValue
 js_document_get_body(JSContext *ctx, JSValueConst this_val)
 {
     fprintf(stderr, "[WISP DOM DEBUG] document.body get called\n");
     fflush(stderr);
-    
-    /* body 역할을 할 Element 객체 생성 반환 */
-    return qjs_new_element_object(ctx, "body");
+    //dom_document* doc = qjs_get_dom_document(ctx);
+
 }
 
 static JSValue
@@ -172,6 +205,8 @@ static JSValue
 js_document_createElement(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
     fprintf(stderr, "[WISP DOM DEBUG] document.createElement called\n");
+    fprintf(stderr, "[WISP DOM DEBUG] ctx=%p\n",  ctx);
+    
     fflush(stderr);
 
     const char *tag_name = "div";

@@ -14,6 +14,11 @@
 
 #include "quickjs.h"
 #include <dom/dom.h>
+#include <wisp/browser_window.h>
+#include <wisp/content/hlcache.h>
+#include <wisp/content/content.h>
+#include <wisp/content/handlers/html/private.h> // struct html_content 정의 포함
+#include <wisp/content/handlers/html/html.h>     // html_get_document 선언 포함
 
 /* Element private data */
 typedef struct {
@@ -31,42 +36,53 @@ typedef struct jsthread {
     bool closed;
 } jsthread;
 
+/* html.c 내부에 정의된 문서 획득 함수 외부 선언 (암시적 선언 에러 방지) */
+struct dom_document *html_get_document(hlcache_handle *h);
 
-/* html_content 구조체 선언 (필요한 필드만 참조) 부착 */
-struct html_content {
-    /* base content 구조체 필드들이 앞에 위치함 */
-    char dummy_base[sizeof(void *) * 4]; // 또는 프로젝트 내 html.h 등의 정의를 따름
-    struct dom_document *document;
-};
-
-JSValue qjs_new_element_object(JSContext *ctx, const char *tag_name)
+struct dom_document *qjs_get_dom_document(JSContext *ctx)
 {
-    JSValue proto = JS_GetClassProto(ctx, js_element_class_id);
-    JSValue obj = JS_NewObjectProtoClass(ctx, proto, js_element_class_id);
-    JS_FreeValue(ctx, proto);
+    struct jsthread *thread = JS_GetContextOpaque(ctx);
+    if (thread == NULL) {
+        return NULL;
+    }
 
-    if (!JS_IsException(obj)) {
-        ElementPrivate *priv = calloc(1, sizeof(ElementPrivate));
-        if (priv) {
-            jsthread *thread = JS_GetContextOpaque(ctx);
-            struct dom_document *doc = thread ? (struct dom_document *)thread->doc_priv : NULL;
+    struct dom_document *doc = NULL;
+    struct html_content *htmlc = NULL;
 
-            fprintf(stderr, "[WISP DOM DEBUG] qjs_new_element_object: thread=%p, doc=%p, tag=%s\n", 
-                    (void*)thread, (void*)doc, tag_name ? tag_name : "NULL");
-            fflush(stderr);
+    /* 1차 시도: doc_priv 직접 참조 */
+    if (thread->doc_priv != NULL && (uintptr_t)thread->doc_priv > 0x1000) {
+        htmlc = (struct html_content *)thread->doc_priv;
+        doc = htmlc->document;
+    }
 
-            /* libdom 내부 함수 호출로 인한 크래시를 방지하기 위해 안전한 폴백 노드를 직접 할당합니다. */
-            priv->private_ptr = calloc(1, 128); 
-            
-            fprintf(stderr, "[WISP DOM DEBUG] Assigned safe fallback private_ptr=%p for tag: %s\n", 
-                    priv->private_ptr, tag_name ? tag_name : "div");
-            fflush(stderr);
+    /* 2차 시도 (폴백): win_priv 또는 htmlc->bw를 통해 브라우저 윈도우에서 문서 획득 */
+    struct browser_window *bw = NULL;
+    if (thread->win_priv != NULL && (uintptr_t)thread->win_priv > 0x1000) {
+        bw = (struct browser_window *)thread->win_priv;
+    } else if (htmlc != NULL && htmlc->bw != NULL && (uintptr_t)htmlc->bw > 0x1000) {
+        bw = htmlc->bw; /* 유효한 주소일 때만 허용 */
+    }
 
-            JS_SetOpaque(obj, priv);
+    if (doc == NULL && bw != NULL && (uintptr_t)bw > 0x1000) {
+        hlcache_handle *h = browser_window_get_content(bw);
+        if (h != NULL) {
+            doc = html_get_document(h);
         }
     }
 
-    return obj;
+    return doc;
+}
+
+JSValue qjs_new_element_object(JSContext *ctx, const char *tag_name)
+{
+    struct jsthread *thread = JS_GetContextOpaque(ctx);
+    struct dom_document *doc = qjs_get_dom_document(ctx);
+
+            fprintf(stderr, "[WISP DOM DEBUG] qjs_new_element_object: thread=%p, content=%p, doc=%p, tag=%s\n", 
+                    (void*)thread, thread ? thread->doc_priv : NULL, (void*)doc, tag_name ? tag_name : "NULL");
+            fflush(stderr);
+
+    return JS_UNDEFINED;
 }
 
 static JSValue

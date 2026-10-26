@@ -683,8 +683,18 @@ static nserror html_create_html_data(html_content *c, const http_parameter *para
 
         return libdom_hubbub_error_to_nserror(error);
     }
-
+    fprintf(stderr, "[WISP] html_create_html_data SUCCESS, parser=%p for content %p\n", c->parser, c );
     NSLOG(wisp, DEBUG, "<<< html_create_html_data SUCCESS, parser=%p for content %p", c->parser, c);
+    /* [추가] 파서와 문서가 생성된 즉시 자바스크립트 스레드를 미리 생성합니다 */
+    if (c->enable_scripting && c->jsthread == NULL) {
+        jsheap *heap = NULL;
+        if (js_newheap(5000, &heap) == NSERROR_OK && heap != NULL) {
+            nserror js_err = js_newthread(heap, c, c, &c->jsthread);
+            if (js_err != NSERROR_OK) {
+                js_destroyheap(heap);
+            }
+        }
+    }
 
     err = dom_node_set_user_data(c->document, corestring_dom___ns_key_html_content_data, c,
         html_document_user_data_handler, (void *)&old_node_data);
@@ -720,6 +730,7 @@ static nserror html_create_html_data(html_content *c, const http_parameter *para
 static nserror html_create(const content_handler *handler, lwc_string *imime_type, const http_parameter *params,
     llcache_handle *llcache, const char *fallback_charset, bool quirks, struct content **c)
 {
+    fprintf(stderr,  "[WISP] html_create START llcache_handle=%p\n",  llcache);
     PERF("html_create START");
     html_content *html;
     nserror error;
@@ -1577,6 +1588,7 @@ static nserror
 html_open(struct content *c, struct browser_window *bw, struct content *page, struct object_params *params)
 {
     html_content *html = (html_content *)c;
+    nserror error; /* [해결 1] error 변수 선언 추가 */
 
     html->bw = bw;
     html->page = (html_content *)page;
@@ -1591,9 +1603,30 @@ html_open(struct content *c, struct browser_window *bw, struct content *page, st
 
     html_object_open_objects(html, bw);
 
+    /* [해결 2] 자바스크립트 스레드 생성 및 바인딩 */
+    if (html->enable_scripting && html->jsthread == NULL) {
+        jsheap *heap = NULL;
+        
+        /* 
+         * 만약 브라우저 창(bw)에 힙을 가져오는 함수가 없다면, 
+         * 새로 힙을 생성하거나 창의 프라이빗 데이터에서 힙을 조회할 수 있습니다.
+         * 예시로 새로운 힙을 생성(또는 창별 관리 힙 조회)하는 구문:
+         */
+        error = js_newheap(5000, &heap); /* 5초 타임아웃 힙 생성 예시 */
+        if (error == NSERROR_OK && heap != NULL) {
+            /* 
+             * win_priv에는 bw를, doc_priv에는 html을 정확히 주입합니다.
+             */
+            error = js_newthread(heap, html, html, &html->jsthread);
+            if (error != NSERROR_OK) {
+                NSLOG(wisp, ERROR, "Failed to create JavaScript thread for HTML content");
+                js_destroyheap(heap);
+            }
+        }
+    }
+
     return NSERROR_OK;
 }
-
 
 /**
  * Handle a window containing a CONTENT_HTML being closed.
