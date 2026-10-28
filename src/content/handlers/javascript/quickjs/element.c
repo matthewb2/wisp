@@ -78,11 +78,51 @@ JSValue qjs_new_element_object(JSContext *ctx, const char *tag_name)
     struct jsthread *thread = JS_GetContextOpaque(ctx);
     struct dom_document *doc = qjs_get_dom_document(ctx);
 
-            fprintf(stderr, "[WISP DOM DEBUG] qjs_new_element_object: thread=%p, content=%p, doc=%p, tag=%s\n", 
-                    (void*)thread, thread ? thread->doc_priv : NULL, (void*)doc, tag_name ? tag_name : "NULL");
-            fflush(stderr);
+    fprintf(stderr, "[WISP DOM DEBUG] qjs_new_element_object: thread=%p, content=%p, doc=%p, tag=%s\n", 
+            (void*)thread, thread ? thread->doc_priv : NULL, (void*)doc, tag_name ? tag_name : "NULL");
+    fflush(stderr);
 
-    return JS_UNDEFINED;
+    if (!doc || !tag_name) {
+        return JS_UNDEFINED;
+    }
+
+    dom_string *tag_dom_str = NULL;
+    dom_element *element = NULL;
+    dom_exception exc;
+
+    // 1. 태그 이름을 libdom용 dom_string으로 생성
+    exc = dom_string_create((const uint8_t *)tag_name, strlen(tag_name), &tag_dom_str);
+    if (exc != DOM_NO_ERR || !tag_dom_str) {
+        return JS_EXCEPTION;
+    }
+
+    // 2. 문서로부터 실제 엘리먼트 생성
+    exc = dom_document_create_element(doc, tag_dom_str, &element);
+    
+    // 생성에 사용한 dom_string은 참조 해제
+    dom_string_unref(tag_dom_str);
+
+    if (exc != DOM_NO_ERR || !element) {
+        return JS_EXCEPTION;
+    }
+
+    // 3. QuickJS Element 객체 생성 및 Opaque(private_ptr) 연결
+    JSValue obj = JS_NewObjectClass(ctx, js_element_class_id);
+    if (JS_IsException(obj)) {
+        // 생성 실패 시 libdom element 해제 필요할 수 있음
+        return obj;
+    }
+
+    ElementPrivate *priv = malloc(sizeof(ElementPrivate));
+    if (!priv) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    priv->private_ptr = element;
+
+    JS_SetOpaque(obj, priv);
+
+    return obj;
 }
 
 static JSValue
