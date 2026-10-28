@@ -66,14 +66,55 @@ static JSClassID js_document_class_id;
 /* qjs_new_element_object 프로토타입 선언 */
 JSValue qjs_new_element_object(JSContext *ctx, const char *tag_name);
 
+/* 엘리먼트를 QuickJS 객체로 래핑하는 공통 헬퍼 함수 */
+JSValue qjs_wrap_element(JSContext *ctx, dom_element *element)
+{
+    if (!element) {
+        return JS_UNDEFINED;
+    }
+    
+    JSValue obj = JS_NewObjectClass(ctx, js_element_class_id);
+    if (JS_IsException(obj)) {
+        return obj;
+    }
+
+    ElementPrivate *priv = malloc(sizeof(ElementPrivate));
+    if (!priv) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    priv->private_ptr = element;
+    JS_SetOpaque(obj, priv);
+
+    return obj;
+}
+
+/* 다른 파일(element.c 등)에 정의된 돔 문서 획득 함수 선언 */
+struct dom_document *qjs_get_dom_document(JSContext *ctx);
 
 static JSValue
 js_document_get_body(JSContext *ctx, JSValueConst this_val)
 {
     fprintf(stderr, "[WISP DOM DEBUG] document.body get called\n");
     fflush(stderr);
-    //dom_document* doc = qjs_get_dom_document(ctx);
 
+    struct dom_document *doc = qjs_get_dom_document(ctx);
+    if (!doc) {
+        return JS_UNDEFINED;
+    }
+
+    dom_element *body_element = NULL;
+    
+    /* libdom의 HTML 문서 인터페이스를 통해 body 가져오기 */
+    dom_exception exc = dom_html_document_get_body((dom_html_document *)doc, &body_element);
+    
+    if (exc != DOM_NO_ERR || !body_element) {
+        fprintf(stderr, "[WISP DOM DEBUG] document.body: failed to get body element (exc=%d, body=%p)\n", exc, (void*)body_element);
+        fflush(stderr);
+        return JS_UNDEFINED;
+    }
+
+    return qjs_wrap_element(ctx, body_element);
 }
 
 static JSValue

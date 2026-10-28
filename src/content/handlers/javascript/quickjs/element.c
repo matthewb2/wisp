@@ -129,21 +129,74 @@ static JSValue
 js_element_set_textContent(JSContext *ctx, JSValueConst this_val, JSValueConst val)
 {
     const char *text = JS_ToCString(ctx, val);
-    if (text) {
-        fprintf(stderr, "[WISP DOM DEBUG] Element.textContent set called with text: '%s'\n", text);
-        fflush(stderr);
-
-        ElementPrivate *priv = JS_GetOpaque(this_val, js_element_class_id);
-        if (priv) {
-            fprintf(stderr, "[WISP DOM DEBUG] -> element priv=%p, private_ptr=%p\n", (void*)priv, priv->private_ptr);
-            /* TODO: 실제 libdom 노드에 텍스트 내용 반영 */
-        } else {
-            fprintf(stderr, "[WISP DOM DEBUG] -> WARNING: element priv is NULL!\n");
-        }
-        fflush(stderr);
-
-        JS_FreeCString(ctx, text);
+    if (!text) {
+        return JS_UNDEFINED;
     }
+
+    fprintf(stderr, "[WISP DOM DEBUG] Element.textContent set called with text: '%s'\n", text);
+    fflush(stderr);
+
+    ElementPrivate *priv = JS_GetOpaque(this_val, js_element_class_id);
+    if (!priv || !priv->private_ptr) {
+        fprintf(stderr, "[WISP DOM DEBUG] -> WARNING: element priv or private_ptr is NULL!\n");
+        fflush(stderr);
+        JS_FreeCString(ctx, text);
+        return JS_UNDEFINED;
+    }
+
+    dom_element *element = (dom_element *)priv->private_ptr;
+    dom_document *doc = qjs_get_dom_document(ctx);
+    if (!doc) {
+        JS_FreeCString(ctx, text);
+        return JS_UNDEFINED;
+    }
+
+    dom_string *text_dstr = NULL;
+    dom_text *text_node = NULL;
+    dom_exception exc;
+
+    // 1. 텍스트 문자열을 libdom용 dom_string으로 생성
+    exc = dom_string_create((const uint8_t *)text, strlen(text), &text_dstr);
+    if (exc != DOM_NO_ERR || !text_dstr) {
+        JS_FreeCString(ctx, text);
+        return JS_EXCEPTION;
+    }
+
+    // 2. 실제 libdom 텍스트 노드 생성
+    exc = dom_document_create_text_node(doc, text_dstr, &text_node);
+    dom_string_unref(text_dstr);
+    JS_FreeCString(ctx, text);
+
+    if (exc != DOM_NO_ERR || !text_node) {
+        return JS_EXCEPTION;
+    }
+
+    // 3. 기존 자식 노드 제거 (textContent 표준 동작: 기존 내용 초기화)
+    dom_node *first_child = NULL;
+    dom_node_get_first_child((dom_node *)element, &first_child);
+    while (first_child != NULL) {
+        dom_node *next_child = NULL;
+        dom_node_get_next_sibling(first_child, &next_child);
+        dom_node *removed = NULL;
+        dom_node_remove_child((dom_node *)element, first_child, &removed);
+        if (removed) {
+            dom_node_unref(removed);
+        }
+        first_child = next_child;
+    }
+
+    // 4. 생성된 텍스트 노드를 엘리먼트에 자식으로 추가
+    dom_node *result = NULL;
+    exc = dom_node_append_child((dom_node *)element, (dom_node *)text_node, &result);
+    
+    // 텍스트 노드 참조 해제 (append_child가 소유권을 가져감)
+    dom_node_unref((dom_node *)text_node);
+
+    if (exc != DOM_NO_ERR) {
+        fprintf(stderr, "[WISP DOM DEBUG] Failed to append text node to element, exc=%d\n", exc);
+        fflush(stderr);
+    }
+
     return JS_UNDEFINED;
 }
 
@@ -165,19 +218,26 @@ static JSValue js_element_appendChild(JSContext *ctx, JSValueConst this_val, int
     fflush(stderr);
 
     if (!parent_priv || !child_priv || !parent_priv->private_ptr || !child_priv->private_ptr) {
-        fprintf(stderr, "[WISP DOM DEBUG] WARNING: parent or child private_ptr is NULL! Skipped libdom append.\n");
+        fprintf(stderr, "[WISP DOM DEBUG] WARNING: parent or child private_ptr is NULL!\n");
         fflush(stderr);
-        return JS_DupValue(ctx, argv[0]);
+        JS_ThrowInternalError(ctx, "Invalid node");
+        return JS_EXCEPTION;
     }
 
-    /* [중요] 현재 private_ptr이 더미(mock) 메모리이므로, 
-       실제 libdom 함수 호출 시 발생하는 세그멘테이션 폴트를 방지하기 위해 임시로 스킵합니다. */
-    fprintf(stderr, "[WISP DOM DEBUG] Element.appendChild: Mock nodes detected, safely skipping libdom_node_append_child to prevent crash.\n");
-    fflush(stderr);
+    dom_node *parent_node = (dom_node *)parent_priv->private_ptr;
+    dom_node *child_node = (dom_node *)child_priv->private_ptr;
+    dom_node *result = NULL;
 
-    // 실제 libdom 호출 대신 정상 완료 처리
-    // dom_node_append_child(parent_priv->private_ptr, child_priv->private_ptr, &result);
+    /* 실제 libdom 자식 노드 추가 호출 */
+    dom_exception exc = dom_node_append_child(parent_node, child_node, &result);
+    if (exc != DOM_NO_ERR) {
+        fprintf(stderr, "[WISP DOM DEBUG] dom_node_append_child failed with code: %d\n", exc);
+        fflush(stderr);
+        JS_ThrowInternalError(ctx, "Failed to append child");
+        return JS_EXCEPTION;
+    }
 
+    /* 자식 노드를 성공적으로 추가한 후, JS 객체를 다시 반환 (DOM 표준 동작) */
     return JS_DupValue(ctx, argv[0]);
 }
 
