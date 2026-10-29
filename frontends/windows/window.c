@@ -78,6 +78,15 @@ void nsws_ime_start_composition(HWND hwnd, struct gui_window *gw)
     HIMC hIMC;
     COMPOSITIONFORM compform;
 
+    if (gw != NULL) {
+        /* A new composition starts with an empty string.  Reset the preview and
+         * move the caret back to the insertion point before asking the IME for
+         * its position, so a leftover composition cannot offset it. */
+        gw->ime_composition_len = 0;
+        gw->ime_composing = true;
+        nsws_drawable_ime_invalidate(gw);
+    }
+
     hIMC = ImmGetContext(hwnd);
     if (hIMC == NULL) {
         return;
@@ -88,13 +97,6 @@ void nsws_ime_start_composition(HWND hwnd, struct gui_window *gw)
 
     ImmSetCompositionWindow(hIMC, &compform);
     ImmReleaseContext(hwnd, hIMC);
-
-    if (gw != NULL) {
-        /* A new composition starts with an empty string. */
-        gw->ime_composition_len = 0;
-        gw->ime_composing = true;
-        nsws_drawable_ime_invalidate(gw);
-    }
 }
 
 /**
@@ -167,6 +169,8 @@ LRESULT nsws_handle_composition(HWND hwnd, struct gui_window *gw, WPARAM wParam,
     LONG bytes;
     LONG got;
     bool handled = false;
+    bool preview_changed = false;
+    LRESULT result;
     wchar_t wcs[NSWS_IME_MAX_UNITS];
 
     if ((gw == NULL) || (gw->bw == NULL)) {
@@ -195,7 +199,7 @@ LRESULT nsws_handle_composition(HWND hwnd, struct gui_window *gw, WPARAM wParam,
             }
         }
 
-        nsws_drawable_ime_invalidate(gw);
+        preview_changed = true;
     }
 
     /* Commit the composition result to the browser window. */
@@ -214,21 +218,22 @@ LRESULT nsws_handle_composition(HWND hwnd, struct gui_window *gw, WPARAM wParam,
         /* The committed text replaces the preview. */
         gw->ime_composing = false;
         gw->ime_composition_len = 0;
-        nsws_drawable_ime_invalidate(gw);
 
+        preview_changed = true;
         handled = true;
     }
 
     ImmReleaseContext(hwnd, hIMC);
 
-    if (handled) {
-        /* The result has been delivered to the core, suppress WM_CHAR
-         * generation from the default handler to avoid duplicate input. */
-        return 0;
+    result = handled ? 0 : DefWindowProcW(hwnd, WM_IME_COMPOSITION, wParam, lParam);
+
+    /* Repaint the preview and move the caret after the default handler has run,
+     * so that it cannot undo the composition caret position. */
+    if (preview_changed) {
+        nsws_drawable_ime_invalidate(gw);
     }
 
-    /* Let the default handler deal with the remaining composition state. */
-    return DefWindowProcW(hwnd, WM_IME_COMPOSITION, wParam, lParam);
+    return result;
 }
 
 /**
@@ -1777,10 +1782,12 @@ static void win32_window_place_caret(struct gui_window *w, int x, int y, int hei
     SetCaretPos(x - w->scrollx, y - w->scrolly);
     ShowCaret(w->drawingarea);
 
-    /* Remember the caret location so the IME composition preview can be
-     * rendered in the page at the point where text will be inserted. */
-    w->caret_x = x - w->scrollx;
-    w->caret_y = y - w->scrolly;
+    /* Remember the caret location in document coordinates so the IME
+     * composition preview can be rendered at the point where text will be
+     * inserted.  The scroll offset is applied when the preview is drawn, so
+     * the preview stays aligned with the text if the page scrolls. */
+    w->caret_x = x;
+    w->caret_y = y;
     w->caret_height = height;
 }
 
@@ -2138,6 +2145,9 @@ nserror win32_window_set_scroll(struct gui_window *gw, const struct rect *rect)
             gw->drawingarea, -gw->requestscrollx, -gw->requestscrolly, &r, NULL, NULL, &redraw, SW_INVALIDATE);
         NSLOG(wisp, DEEPDEBUG, "ScrollWindowEx %d, %d", -gw->requestscrollx, -gw->requestscrolly);
     }
+
+    /* Keep the tracked composition preview rectangle in sync with the blit. */
+    OffsetRect(&gw->ime_rect, -gw->requestscrollx, -gw->requestscrolly);
 
     gw->scrolly += gw->requestscrolly;
     gw->scrollx += gw->requestscrollx;

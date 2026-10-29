@@ -396,17 +396,76 @@ static LRESULT nsws_drawable_keydown(struct gui_window *gw, HWND hwnd, WPARAM wp
 /**
  * Create the font used to render the in-progress IME composition string.
  *
- * \param height The font height in pixels, or 0 for a default.
+ * The core sizes the caret to the line box, which its text areas make 1.3
+ * times the font size.  Using the caret height directly as the font height
+ * would therefore render the composition noticeably larger than the page
+ * text, so convert back to the font size here.
+ *
+ * \param caret_height The height of the caret in pixels, or 0 for a default.
  * \return A newly created font, or NULL on failure.
  */
-static HFONT nsws_ime_create_font(int height)
+static HFONT nsws_ime_create_font(int caret_height)
 {
-    if (height <= 0) {
-        height = 16;
+    int font_size;
+
+    if (caret_height <= 0) {
+        font_size = 16;
+    } else {
+        /* ceil(caret_height / 1.3) */
+        font_size = (caret_height * 10 + 12) / 13;
     }
 
-    return CreateFontW(-height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, HANGEUL_CHARSET, OUT_DEFAULT_PRECIS,
+    if (font_size <= 0) {
+        font_size = 1;
+    }
+
+    return CreateFontW(-font_size, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, HANGEUL_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Malgun Gothic");
+}
+
+
+/**
+ * Measurements of the in-progress IME composition string.
+ */
+struct nsws_ime_metrics {
+    SIZE extent; /**< advance width and cell height of the string */
+    int ink_ascent; /**< distance from the baseline to the top of the glyph ink */
+    int ink_height; /**< height of the glyph ink */
+};
+
+/**
+ * Measure the composition string with the font currently selected into an HDC.
+ *
+ * \param hdc The device context with the composition font selected.
+ * \param text The composition string.
+ * \param length The number of UTF-16 units in text.
+ * \param metrics Updated with the measured values.
+ */
+static void nsws_ime_get_metrics(HDC hdc, const wchar_t *text, int length, struct nsws_ime_metrics *metrics)
+{
+    TEXTMETRICW tm;
+
+    metrics->extent.cx = 0;
+    metrics->extent.cy = 0;
+    metrics->ink_ascent = 0;
+    metrics->ink_height = 0;
+
+    if ((length <= 0) || (GetTextExtentPoint32W(hdc, text, length, &metrics->extent) == 0)) {
+        return;
+    }
+
+    if (GetTextMetricsW(hdc, &tm) == 0) {
+        metrics->ink_ascent = metrics->extent.cy;
+        metrics->ink_height = metrics->extent.cy;
+        return;
+    }
+
+    /* 
+     * GetGlyphOutlineW 대신 폰트의 표준 TextMetric(tmAscent, tmHeight)을 사용하여 
+     * 한글 조합 중 메트릭이 널뛰는 현상과 높이 역전(ink_height < ink_ascent) 오류를 방지합니다.
+     */
+    metrics->ink_ascent = tm.tmAscent;
+    metrics->ink_height = tm.tmHeight;
 }
 
 
@@ -415,24 +474,35 @@ static HFONT nsws_ime_create_font(int height)
  *
  * \param gw The window whose composition preview to measure.
  * \param rect Updated to the rectangle covered by the preview.
+ * \param caret_offset Updated with the horizontal distance from the base caret
+ *                     position to the trailing edge of the composition string.
  */
-static void nsws_ime_measure(struct gui_window *gw, RECT *rect)
+static void nsws_ime_measure(struct gui_window *gw, RECT *rect, int *caret_offset)
 {
     HDC hdc;
     HFONT font;
     HFONT oldfont;
-    SIZE extent = {0, 0};
+    struct nsws_ime_metrics metrics;
+    int baseline;
     int height;
+    int screen_x;
+    int screen_y;
 
     SetRectEmpty(rect);
+    *caret_offset = 0;
 
     if ((gw == NULL) || (gw->drawingarea == NULL)) {
         return;
     }
 
+    /* The caret is stored in document coordinates; convert to drawing area
+     * (screen) coordinates by applying the current scroll offset. */
+    screen_x = gw->caret_x - gw->scrollx;
+    screen_y = gw->caret_y - gw->scrolly;
+
     height = (gw->caret_height > 0) ? gw->caret_height : 16;
 
-    SetRect(rect, gw->caret_x, gw->caret_y, gw->caret_x + 2, gw->caret_y + height + 2);
+    SetRect(rect, screen_x, screen_y, screen_x + 2, screen_y + height + 2);
 
     if (gw->ime_composition_len <= 0) {
         return;
@@ -450,16 +520,28 @@ static void nsws_ime_measure(struct gui_window *gw, RECT *rect)
     }
 
     oldfont = SelectObject(hdc, font);
-    if (GetTextExtentPoint32W(hdc, gw->ime_composition, gw->ime_composition_len, &extent) != 0) {
-        rect->right = gw->caret_x + extent.cx + 3;
-        if ((gw->caret_y + extent.cy + 2) > rect->bottom) {
-            rect->bottom = gw->caret_y + extent.cy + 2;
-        }
-    }
+    nsws_ime_get_metrics(hdc, gw->ime_composition, gw->ime_composition_len, &metrics);
     SelectObject(hdc, oldfont);
     DeleteObject(font);
 
     ReleaseDC(gw->drawingarea, hdc);
+
+    if (metrics.extent.cx <= 0) {
+        return;
+    }
+
+    /* The core draws the text of a line box on the baseline at three quarters
+     * of the line height (see textarea_setup_text_offsets), so do the same. */
+    baseline = screen_y + (height * 3 + 2) / 4;
+
+    /* The preview rectangle includes the two pixel underline strip so that it
+     * is erased together with the text when the composition ends. */
+    rect->top = baseline - metrics.ink_ascent;
+    rect->right = screen_x + metrics.extent.cx + 3;
+    rect->bottom = rect->top + metrics.ink_height + 2;
+
+    /* The text is drawn one pixel to the right of the base caret position. */
+    *caret_offset = metrics.extent.cx + 1;
 }
 
 
@@ -476,13 +558,14 @@ void nsws_drawable_ime_invalidate(struct gui_window *gw)
     RECT oldrect;
     RECT newrect;
     RECT unionrect;
+    int caret_offset;
 
     if ((gw == NULL) || (gw->drawingarea == NULL)) {
         return;
     }
 
     oldrect = gw->ime_rect;
-    nsws_ime_measure(gw, &newrect);
+    nsws_ime_measure(gw, &newrect, &caret_offset);
 
     if (!IsRectEmpty(&oldrect)) {
         UnionRect(&unionrect, &oldrect, &newrect);
@@ -490,6 +573,19 @@ void nsws_drawable_ime_invalidate(struct gui_window *gw)
     }
 
     InvalidateRect(gw->drawingarea, &newrect, FALSE);
+
+    if (gw->caret_height <= 0) {
+        /* No caret has been placed in the drawing area yet. */
+        return;
+    }
+
+    /* While a composition is in progress the caret belongs after the
+     * composition string rather than at the point where it started.  When the
+     * composition ends caret_offset is zero, which puts the caret back at the
+     * position provided by the core. */
+    HideCaret(gw->drawingarea);
+    SetCaretPos(gw->caret_x - gw->scrollx + caret_offset, gw->caret_y - gw->scrolly);
+    ShowCaret(gw->drawingarea);
 }
 
 
@@ -509,18 +605,33 @@ static void nsws_ime_paint(struct gui_window *gw, HDC hdc)
     HFONT oldfont;
     RECT rect;
     RECT underline;
-    SIZE extent = {0, 0};
+    struct nsws_ime_metrics metrics;
     COLORREF oldcolour;
+    UINT oldalign;
     int oldmode;
+    int baseline;
     int height;
+    int screen_x;
+    int screen_y;
+    int padding_right;
+    int underline_thickness;    
 
     SetRectEmpty(&gw->ime_rect);
 
-    if ((gw->ime_composition_len <= 0) || (hdc == NULL)) {
+    if ((gw == NULL) || (gw->ime_composition_len <= 0) || (hdc == NULL)) {
         return;
     }
 
+    /* The caret is stored in document coordinates; convert to drawing area
+     * (screen) coordinates by applying the current scroll offset. */
+    screen_x = gw->caret_x - gw->scrollx;
+    screen_y = gw->caret_y - gw->scrolly;
+
     height = (gw->caret_height > 0) ? gw->caret_height : 16;
+    
+    /* 폰트 크기에 비례하여 여백과 밑줄 두께를 동적으로 계산합니다. */
+    padding_right = max(2, height / 6);          // 폰트 크기의 약 1/6을 가로 여백으로 부여
+    underline_thickness = max(1, height / 12);    // 폰트 크기에 비례하되 최소 1~2픽셀 유지
 
     font = nsws_ime_create_font(height);
     if (font == NULL) {
@@ -529,31 +640,58 @@ static void nsws_ime_paint(struct gui_window *gw, HDC hdc)
 
     oldfont = SelectObject(hdc, font);
 
-    GetTextExtentPoint32W(hdc, gw->ime_composition, gw->ime_composition_len, &extent);
-    if (extent.cy > height) {
-        height = extent.cy;
+    nsws_ime_get_metrics(hdc, gw->ime_composition, gw->ime_composition_len, &metrics);
+    if (metrics.extent.cx <= 0) {
+        SelectObject(hdc, oldfont);
+        DeleteObject(font);
+        return;
     }
 
-    SetRect(&rect, gw->caret_x, gw->caret_y, gw->caret_x + extent.cx + 2, gw->caret_y + height + 2);
+    /* The core draws the text of a line box on the baseline at three quarters
+     * of the line height (see textarea_setup_text_offsets), so do the same. */
+    baseline = screen_y + (height * 3 + 2) / 4;
+    
+    /* 디버깅 정보 출력 (라벨과 전달 인자 매칭 수정) */
+    fprintf(stderr, "[IME_DEBUG] len:%d | caret:(%d, %d) scroll:(%d, %d) | screen:(%d, %d)\n"
+                    "            | height:%d | extent:(cx:%d, cy:%d) | ink_ascent:%d, ink_height:%d | baseline:%d\n",
+            gw->ime_composition_len,
+            gw->caret_x, gw->caret_y,
+            gw->scrollx, gw->scrolly,
+            screen_x, screen_y,
+            height,
+            metrics.extent.cx, metrics.extent.cy,
+            metrics.ink_ascent, metrics.ink_height, 
+            baseline);
+
+    /* The preview rectangle covers the caret box area cleanly using dynamic padding */
+    SetRect(&rect, screen_x, screen_y, screen_x + metrics.extent.cx + padding_right, screen_y + height);
     gw->ime_rect = rect;
 
     /* Opaque background so the composition stays legible over page content. */
     FillRect(hdc, &rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
+    /* The plotters leave the device context with TA_BASELINE set, but the
+     * alignment is set explicitly here so the text follows the baseline that
+     * was calculated above. */
+    oldalign = SetTextAlign(hdc, TA_BASELINE | TA_LEFT);
     oldcolour = SetTextColor(hdc, RGB(0, 0, 0));
     oldmode = SetBkMode(hdc, TRANSPARENT);
-    TextOutW(hdc, gw->caret_x + 1, gw->caret_y, gw->ime_composition, gw->ime_composition_len);
+
+    ExtTextOutW(
+        hdc, screen_x + 1, baseline, ETO_CLIPPED, &rect, gw->ime_composition, (UINT)gw->ime_composition_len, NULL);
+
     SetBkMode(hdc, oldmode);
     SetTextColor(hdc, oldcolour);
+    SetTextAlign(hdc, oldalign);
 
-    /* Underline the composition, as is conventional for IME input. */
-    SetRect(&underline, gw->caret_x, gw->caret_y + height, gw->caret_x + extent.cx + 2, gw->caret_y + height + 2);
+    /* 밑줄: 캐럿 하단 내부에서 동적 두께(underline_thickness)만큼 차지하도록 설정 */
+    SetRect(&underline, screen_x, screen_y + height - underline_thickness,
+        screen_x + metrics.extent.cx + padding_right, screen_y + height);
     FillRect(hdc, &underline, (HBRUSH)GetStockObject(BLACK_BRUSH));
 
     SelectObject(hdc, oldfont);
     DeleteObject(font);
 }
-
 
 /**
  * Handle paint messages.
