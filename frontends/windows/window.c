@@ -196,6 +196,21 @@ static void nsws_window_set_accels(struct gui_window *gw)
     accels[6].cmd = IDM_NAV_RELOAD;
     accels[7].key = 0x4C; /* L */
     accels[7].cmd = IDM_FILE_OPEN_LOCATION;
-    accels[8].key = 0x57; /* w */
+    accels[8].key = 0x57; /* W */
     accels[8].cmd = IDM_FILE_CLOSE_WINDOW;
-    accels[9].key =
+    accels[9].key = 0x46; /* F */
+    accels[9].cmd = IDM_EDIT_FIND;
+    accels[10].key = 0x41; /* A */
+    accels[10].cmd = IDM_EDIT_SELECT_ALL;
+    accels[11].key = 0x43; /* C */
+    accels[11].cmd = IDM_EDIT_COPY;
+    accels[12].key = 0x56; /* V */
+    accels[12].cmd = IDM_EDIT_PASTE;
+
+    if (gw != NULL && gw->main != NULL) {
+        HACCEL hAccel = CreateAcceleratorTableW(accels, nitems);
+        if (hAccel != NULL) {
+            gw->accel = hAccel;
+        }
+    }
+}
