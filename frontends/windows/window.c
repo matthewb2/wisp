@@ -70,6 +70,11 @@
 static struct gui_window *window_list = NULL;
 
 /**
+ * Table of win32 windows
+ */
+struct gui_window *win32_window_table[64] = { NULL };
+
+/**
  * The main window class name
  */
 static const LPCWSTR windowclassname_main = L"nswsmainwindow";
@@ -95,19 +100,48 @@ static const LPCWSTR windowclassname_main = L"nswsmainwindow";
 static int open_windows = 0;
 
 
+/* Function pointers for dynamic Imm32 binding */
+typedef HIMC (WINAPI *pfnImmGetContext)(HWND);
+typedef BOOL (WINAPI *pfnImmReleaseContext)(HWND, HIMC);
+typedef BOOL (WINAPI *pfnImmSetCompositionWindow)(HIMC, LPCOMPOSITIONFORM);
+typedef LONG (WINAPI *pfnImmGetCompositionStringW)(HIMC, DWORD, LPVOID, DWORD);
+
+static pfnImmGetContext fnImmGetContext = NULL;
+static pfnImmReleaseContext fnImmReleaseContext = NULL;
+static pfnImmSetCompositionWindow fnImmSetCompositionWindow = NULL;
+static pfnImmGetCompositionStringW fnImmGetCompositionStringW = NULL;
+static bool imm_initialized = false;
+
+static void nsws_init_imm(void)
+{
+    if (imm_initialized) return;
+    HMODULE hImm = LoadLibraryA("imm32.dll");
+    if (hImm != NULL) {
+        fnImmGetContext = (pfnImmGetContext)GetProcAddress(hImm, "ImmGetContext");
+        fnImmReleaseContext = (pfnImmReleaseContext)GetProcAddress(hImm, "ImmReleaseContext");
+        fnImmSetCompositionWindow = (pfnImmSetCompositionWindow)GetProcAddress(hImm, "ImmSetCompositionWindow");
+        fnImmGetCompositionStringW = (pfnImmGetCompositionStringW)GetProcAddress(hImm, "ImmGetCompositionStringW");
+    }
+    imm_initialized = true;
+}
+
 /**
  * IME Composition Start handler
  */
 static void nsws_ime_start_composition(HWND hwnd, struct gui_window *gw)
 {
-    HIMC hIMC = ImmGetContext(hwnd);
+    nsws_init_imm();
+    if (fnImmGetContext == NULL || fnImmSetCompositionWindow == NULL || fnImmReleaseContext == NULL)
+        return;
+
+    HIMC hIMC = fnImmGetContext(hwnd);
     if (hIMC != NULL) {
         COMPOSITIONFORM CompForm;
         CompForm.dwStyle = CFS_POINT;
         GetCaretPos(&CompForm.ptCurrentPos);
 
-        ImmSetCompositionWindow(hIMC, &CompForm);
-        ImmReleaseContext(hwnd, hIMC);
+        fnImmSetCompositionWindow(hIMC, &CompForm);
+        fnImmReleaseContext(hwnd, hIMC);
     }
 }
 
@@ -124,42 +158,46 @@ static void nsws_ime_end_composition(HWND hwnd, struct gui_window *gw)
  */
 static LRESULT nsws_handle_composition(HWND hwnd, struct gui_window *gw, WPARAM wParam, LPARAM lParam)
 {
+    nsws_init_imm();
     if (lParam & GCS_RESULTSTR) {
-        HIMC hIMC = ImmGetContext(hwnd);
-        if (hIMC != NULL) {
-            const int maxLen = 256;
-            wchar_t wcs[maxLen];
-            LONG bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, wcs, (maxLen - 1) * sizeof(wchar_t));
-            if (bytes > 0) {
-                int wides = bytes / sizeof(wchar_t);
-                wcs[wides] = L'\0';
+        if (fnImmGetContext != NULL && fnImmGetCompositionStringW != NULL &&
+            fnImmSetCompositionWindow != NULL && fnImmReleaseContext != NULL) {
+            HIMC hIMC = fnImmGetContext(hwnd);
+            if (hIMC != NULL) {
+                const int maxLen = 256;
+                wchar_t wcs[maxLen];
+                LONG bytes = fnImmGetCompositionStringW(hIMC, GCS_RESULTSTR, wcs, (maxLen - 1) * sizeof(wchar_t));
+                if (bytes > 0) {
+                    int wides = bytes / sizeof(wchar_t);
+                    wcs[wides] = L'\0';
 
-                char utf8[maxLen * 3];
-                int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wcs, wides, utf8, sizeof(utf8) - 1, NULL, NULL);
-                if (utf8_len > 0) {
-                    utf8[utf8_len] = '\0';
+                    char utf8[maxLen * 3];
+                    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wcs, wides, utf8, sizeof(utf8) - 1, NULL, NULL);
+                    if (utf8_len > 0) {
+                        utf8[utf8_len] = '\0';
 
-                    HWND focus_wnd = GetFocus();
-                    if (gw != NULL && focus_wnd == gw->urlbar) {
-                        /* Insert result string into URL edit control */
-                        SendMessageW(gw->urlbar, EM_REPLACESEL, TRUE, (LPARAM)wcs);
-                    } else if (gw != NULL && gw->bw != NULL) {
-                        /* Send characters to browser window */
-                        for (int i = 0; i < utf8_len; i++) {
-                            browser_window_key_press(gw->bw, (uint32_t)(unsigned char)utf8[i]);
+                        HWND focus_wnd = GetFocus();
+                        if (gw != NULL && focus_wnd == gw->urlbar) {
+                            /* Insert result string into URL edit control */
+                            SendMessageW(gw->urlbar, EM_REPLACESEL, TRUE, (LPARAM)wcs);
+                        } else if (gw != NULL && gw->bw != NULL) {
+                            /* Send characters to browser window */
+                            for (int i = 0; i < utf8_len; i++) {
+                                browser_window_key_press(gw->bw, (uint32_t)(unsigned char)utf8[i]);
+                            }
                         }
                     }
                 }
+
+                /* Update composition window position */
+                COMPOSITIONFORM CompForm;
+                CompForm.dwStyle = CFS_POINT;
+                GetCaretPos(&CompForm.ptCurrentPos);
+                fnImmSetCompositionWindow(hIMC, &CompForm);
+
+                fnImmReleaseContext(hwnd, hIMC);
+                return 0;
             }
-
-            /* Update composition window position */
-            COMPOSITIONFORM CompForm;
-            CompForm.dwStyle = CFS_POINT;
-            GetCaretPos(&CompForm.ptCurrentPos);
-            ImmSetCompositionWindow(hIMC, &CompForm);
-
-            ImmReleaseContext(hwnd, hIMC);
-            return 0;
         }
     }
     return DefWindowProcW(hwnd, WM_IME_COMPOSITION, wParam, lParam);
@@ -211,4 +249,89 @@ static void nsws_window_set_accels(struct gui_window *gw)
             DestroyAcceleratorTable(hAccel);
         }
     }
+}
+
+/**
+ * Get GUI window associated with HWND
+ */
+struct gui_window *nsws_get_gui_window(HWND hwnd)
+{
+    struct gui_window *gw;
+
+    for (gw = window_list; gw != NULL; gw = gw->next) {
+        if (gw->main == hwnd || gw->drawing == hwnd) {
+            return gw;
+        }
+    }
+
+    for (int i = 0; i < 64; i++) {
+        if (win32_window_table[i] != NULL) {
+            if (win32_window_table[i]->main == hwnd ||
+                win32_window_table[i]->drawing == hwnd) {
+                return win32_window_table[i];
+            }
+        }
+    }
+
+    return NULL;
+}
+
+/**
+ * Get main window HWND for GUI window
+ */
+HWND gui_window_main_window(struct gui_window *gw)
+{
+    if (gw == NULL) return NULL;
+    return gw->main;
+}
+
+/**
+ * Set scroll position
+ */
+void win32_window_set_scroll(struct gui_window *gw, int x, int y)
+{
+    if (gw == NULL || gw->bw == NULL) return;
+    /* Implement or trigger scroll update on browser window */
+}
+
+/**
+ * Navigate to URL or action
+ */
+nserror nsws_window_go(struct gui_window *gw, const char *url, bool new_tab)
+{
+    nsurl *nsa_url;
+    nserror err;
+
+    if (url == NULL) return NSERROR_BAD_PARAMETER;
+
+    err = nsurl_create(url, &nsa_url);
+    if (err != NSERROR_OK) return err;
+
+    if (gw != NULL && gw->bw != NULL) {
+        err = browser_window_navigate(gw->bw, nsa_url, NULL, BW_NAVIGATE_NONE, NULL, NULL, NULL);
+    }
+
+    nsurl_unref(nsa_url);
+    return err;
+}
+
+/**
+ * Register main window class
+ */
+bool nsws_create_main_class(HINSTANCE hInstance)
+{
+    WNDCLASSEXW wc;
+
+    memset(&wc, 0, sizeof(wc));
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = hInstance;
+    wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_MAIN_ICON));
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszMenuName = MAKEINTRESOURCEW(IDR_MENU_MAIN);
+    wc.lpszClassName = windowclassname_main;
+
+    return (RegisterClassExW(&wc) != 0);
 }
