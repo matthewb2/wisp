@@ -603,6 +603,17 @@ static LRESULT CALLBACK nsws_window_drawable_event_callback(HWND hwnd, UINT msg,
     case WM_UNICHAR:
         return nsws_drawable_unichar(gw, hwnd, wparam);
 
+    case WM_IME_STARTCOMPOSITION:
+        nsws_ime_start_composition(hwnd, gw);
+        return 0;
+
+    case WM_IME_ENDCOMPOSITION:
+        nsws_ime_end_composition(hwnd, gw);
+        return 0;
+
+    case WM_IME_COMPOSITION:
+        return nsws_handle_composition(hwnd, gw, wparam, lparam);
+
     case WM_SIZE:
         return nsws_drawable_resize(gw);
 

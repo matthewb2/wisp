@@ -86,6 +86,7 @@ target_link_libraries(wisp-windows wisp m ${WISP_COMMON_LIBS}
     crypt32
     bcrypt
     advapi32
+    imm32
 )
 
 # Force fully static linking on Windows (no external DLLs except Windows system DLLs)

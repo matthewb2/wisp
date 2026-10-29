@@ -90,6 +90,33 @@ struct rect;
 struct gui_window *nsws_get_gui_window(HWND hwnd);
 
 /**
+ * Initialise the IME composition window position.
+ *
+ * \param hwnd The win32 handle to the window receiving composition input.
+ * \param gw The win32 gui window associated with hwnd.
+ */
+void nsws_ime_start_composition(HWND hwnd, struct gui_window *gw);
+
+/**
+ * Handle the end of an IME composition.
+ *
+ * \param hwnd The win32 handle to the window receiving composition input.
+ * \param gw The win32 gui window associated with hwnd.
+ */
+void nsws_ime_end_composition(HWND hwnd, struct gui_window *gw);
+
+/**
+ * Handle an IME composition message, forwarding committed text to the browser.
+ *
+ * \param hwnd The win32 handle to the window receiving composition input.
+ * \param gw The win32 gui window associated with hwnd.
+ * \param wParam The message wParam.
+ * \param lParam The message lParam containing GCS_* flags.
+ * \return 0 to indicate the message was handled.
+ */
+LRESULT nsws_handle_composition(HWND hwnd, struct gui_window *gw, WPARAM wParam, LPARAM lParam);
+
+/**
  * Cause a browser window to navigate to a url
  *
  * \param hwnd The win32 handle to the browser window or one of its decendants.

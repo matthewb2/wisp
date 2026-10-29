@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Input / Textarea Rendering Test</title>
+    <style>
+        body {
+            font-family: "Malgun Gothic", Arial, sans-serif;
+            margin: 24px;
+            color: #222222;
+            background-color: #f5f5f5;
+        }
+
+        h1 {
+            font-size: 24px;
+        }
+
+        h2 {
+            font-size: 18px;
+            margin-top: 28px;
+            border-bottom: 1px solid #cccccc;
+            padding-bottom: 4px;
+        }
+
+        p {
+            font-size: 14px;
+            margin: 6px 0;
+        }
+
+        label {
+            font-size: 14px;
+        }
+
+        .row {
+            margin: 8px 0;
+        }
+
+        .wide {
+            width: 320px;
+        }
+
+        .styled {
+            width: 240px;
+            padding: 6px 8px;
+            border: 2px solid #0078d4;
+            background-color: #eef6ff;
+            color: #003a66;
+            font-size: 15px;
+        }
+
+        .rounded {
+            width: 240px;
+            padding: 5px;
+            border: 1px solid #999999;
+            background-color: #ffffff;
+        }
+
+        textarea {
+            width: 320px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Input / Textarea Rendering Test</h1>
+    <p>This page exercises the browser's text input rendering, caret, keyboard and IME support.</p>
+
+    <h2>1. Default text inputs</h2>
+    <div class="row">
+        <label for="f1">With value:</label>
+        <input id="f1" type="text" value="Hello, world">
+    </div>
+    <div class="row">
+        <label for="f2">Empty (click to focus, type):</label>
+        <input id="f2" type="text">
+    </div>
+    <div class="row">
+        <label for="f3">Placeholder-like prefill:</label>
+        <input id="f3" type="text" value="Type here...">
+    </div>
+
+    <h2>2. Sized inputs</h2>
+    <div class="row">
+        <label for="f4">Wide (320px):</label>
+        <input id="f4" type="text" class="wide" value="A wider text field">
+    </div>
+    <div class="row">
+        <label for="f5">Narrow (80px):</label>
+        <input id="f5" type="text" style="width: 80px" value="abcdefghij">
+    </div>
+
+    <h2>3. Styled inputs</h2>
+    <div class="row">
+        <label for="f6">Custom border / background:</label>
+        <input id="f6" type="text" class="styled" value="Styled input">
+    </div>
+    <div class="row">
+        <label for="f7">Rounded border:</label>
+        <input id="f7" type="text" class="rounded" value="Rounded corners">
+    </div>
+
+    <h2>4. Long text (overflow / caret at end)</h2>
+    <div class="row">
+        <input id="f8" type="text" class="wide"
+            value="The quick brown fox jumps over the lazy dog 0123456789">
+    </div>
+
+    <h2>5. Textarea</h2>
+    <div class="row">
+        <label for="t1">Prefilled textarea:</label><br>
+        <textarea id="t1" rows="3">Line one
+Line two
+Line three</textarea>
+    </div>
+    <div class="row">
+        <label for="t2">Empty textarea (rows=2):</label><br>
+        <textarea id="t2" rows="2"></textarea>
+    </div>
+    <div class="row">
+        <label for="t3">Styled textarea:</label><br>
+        <textarea id="t3" rows="3" class="styled">Styled
+multi-line
+content</textarea>
+    </div>
+
+    <h2>6. Korean IME test</h2>
+    <div class="row">
+        <label for="k1">Type Korean here:</label>
+        <input id="k1" type="text" class="wide" value="">
+    </div>
+
+    <h2>7. Mixed with normal content</h2>
+    <p>Normal paragraph text before the field.
+        <input id="f9" type="text" value="inline input"> Normal text after the field.</p>
+
+    <p><a href="index.html">Back to home</a></p>
+</body>
+
+</html>

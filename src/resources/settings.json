@@ -1,0 +1,4 @@
+{
+  "searchEngine": "DuckDuckGo",
+  "searchUrlTemplate": "https://duckduckgo.com/?q={query}"
+}
