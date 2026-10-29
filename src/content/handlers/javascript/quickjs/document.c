@@ -443,3 +443,480 @@ qjs_init_document(JSContext *ctx)
     
     return 0;
 }
+/*---------------------------------------------*/
+
+
+
+JSClassID js_element_class_id;
+
+/* html.c 내부에 정의된 문서 획득 함수 외부 선언 (암시적 선언 에러 방지) */
+struct dom_document *html_get_document(hlcache_handle *h);
+
+struct dom_document *qjs_get_dom_document(JSContext *ctx)
+{
+    struct jsthread *thread = JS_GetContextOpaque(ctx);
+    if (thread == NULL) {
+        return NULL;
+    }
+
+    struct dom_document *doc = NULL;
+    struct html_content *htmlc = NULL;
+
+    /* 1차 시도: doc_priv 직접 참조 */
+    if (thread->doc_priv != NULL && (uintptr_t)thread->doc_priv > 0x1000) {
+        htmlc = (struct html_content *)thread->doc_priv;
+        doc = htmlc->document;
+    }
+
+    /* 2차 시도 (폴백): win_priv 또는 htmlc->bw를 통해 브라우저 윈도우에서 문서 획득 */
+    struct browser_window *bw = NULL;
+    if (thread->win_priv != NULL && (uintptr_t)thread->win_priv > 0x1000) {
+        bw = (struct browser_window *)thread->win_priv;
+    } else if (htmlc != NULL && htmlc->bw != NULL && (uintptr_t)htmlc->bw > 0x1000) {
+        bw = htmlc->bw; /* 유효한 주소일 때만 허용 */
+    }
+
+    if (doc == NULL && bw != NULL && (uintptr_t)bw > 0x1000) {
+        hlcache_handle *h = browser_window_get_content(bw);
+        if (h != NULL) {
+            doc = html_get_document(h);
+        }
+    }
+
+    return doc;
+}
+
+JSValue qjs_new_element_object(JSContext *ctx, const char *tag_name)
+{
+    struct jsthread *thread = JS_GetContextOpaque(ctx);
+    struct dom_document *doc = qjs_get_dom_document(ctx);
+
+    fprintf(stderr, "[WISP DOM DEBUG] qjs_new_element_object: thread=%p, content=%p, doc=%p, tag=%s\n", 
+            (void*)thread, thread ? thread->doc_priv : NULL, (void*)doc, tag_name ? tag_name : "NULL");
+    fflush(stderr);
+
+    if (!doc || !tag_name) {
+        return JS_UNDEFINED;
+    }
+
+    dom_string *tag_dom_str = NULL;
+    dom_element *element = NULL;
+    dom_exception exc;
+
+    // 1. 태그 이름을 libdom용 dom_string으로 생성
+    exc = dom_string_create((const uint8_t *)tag_name, strlen(tag_name), &tag_dom_str);
+    if (exc != DOM_NO_ERR || !tag_dom_str) {
+        return JS_EXCEPTION;
+    }
+
+    // 2. 문서로부터 실제 엘리먼트 생성
+    exc = dom_document_create_element(doc, tag_dom_str, &element);
+    
+    // 생성에 사용한 dom_string은 참조 해제
+    dom_string_unref(tag_dom_str);
+
+    if (exc != DOM_NO_ERR || !element) {
+        return JS_EXCEPTION;
+    }
+
+    // 3. QuickJS Element 객체 생성 및 Opaque(private_ptr) 연결
+    JSValue obj = JS_NewObjectClass(ctx, js_element_class_id);
+    if (JS_IsException(obj)) {
+        // 생성 실패 시 libdom element 해제 필요할 수 있음
+        return obj;
+    }
+
+    ElementPrivate *priv = malloc(sizeof(ElementPrivate));
+    if (!priv) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    priv->private_ptr = element;
+
+    JS_SetOpaque(obj, priv);
+
+    return obj;
+}
+
+static JSValue
+js_element_set_textContent(JSContext *ctx, JSValueConst this_val, JSValueConst val)
+{
+    const char *text = JS_ToCString(ctx, val);
+    if (!text) {
+        return JS_UNDEFINED;
+    }
+
+    fprintf(stderr, "[WISP DOM DEBUG] Element.textContent set called with text: '%s'\n", text);
+    fflush(stderr);
+
+    ElementPrivate *priv = JS_GetOpaque(this_val, js_element_class_id);
+    if (!priv || !priv->private_ptr) {
+        fprintf(stderr, "[WISP DOM DEBUG] -> WARNING: element priv or private_ptr is NULL!\n");
+        fflush(stderr);
+        JS_FreeCString(ctx, text);
+        return JS_UNDEFINED;
+    }
+
+    dom_element *element = (dom_element *)priv->private_ptr;
+    dom_document *doc = qjs_get_dom_document(ctx);
+    if (!doc) {
+        JS_FreeCString(ctx, text);
+        return JS_UNDEFINED;
+    }
+
+    dom_string *text_dstr = NULL;
+    dom_text *text_node = NULL;
+    dom_exception exc;
+
+    // 1. 텍스트 문자열을 libdom용 dom_string으로 생성
+    exc = dom_string_create((const uint8_t *)text, strlen(text), &text_dstr);
+    if (exc != DOM_NO_ERR || !text_dstr) {
+        JS_FreeCString(ctx, text);
+        return JS_EXCEPTION;
+    }
+
+    // 2. 실제 libdom 텍스트 노드 생성
+    exc = dom_document_create_text_node(doc, text_dstr, &text_node);
+    dom_string_unref(text_dstr);
+    JS_FreeCString(ctx, text);
+
+    if (exc != DOM_NO_ERR || !text_node) {
+        return JS_EXCEPTION;
+    }
+
+    // 3. 기존 자식 노드 제거 (textContent 표준 동작: 기존 내용 초기화)
+    dom_node *first_child = NULL;
+    dom_node_get_first_child((dom_node *)element, &first_child);
+    while (first_child != NULL) {
+        dom_node *next_child = NULL;
+        dom_node_get_next_sibling(first_child, &next_child);
+        dom_node *removed = NULL;
+        dom_node_remove_child((dom_node *)element, first_child, &removed);
+        if (removed) {
+            dom_node_unref(removed);
+        }
+        first_child = next_child;
+    }
+
+    // 4. 생성된 텍스트 노드를 엘리먼트에 자식으로 추가
+    dom_node *result = NULL;
+    exc = dom_node_append_child((dom_node *)element, (dom_node *)text_node, &result);
+    
+    // 텍스트 노드 참조 해제 (append_child가 소유권을 가져감)
+    dom_node_unref((dom_node *)text_node);
+
+    if (exc != DOM_NO_ERR) {
+        fprintf(stderr, "[WISP DOM DEBUG] Failed to append text node to element, exc=%d\n", exc);
+        fflush(stderr);
+    }
+
+    return JS_UNDEFINED;
+}
+
+static JSValue js_element_appendChild(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    fprintf(stderr, "[WISP DOM DEBUG] Element.appendChild ENTER (argc=%d)\n", argc);
+    fflush(stderr);
+
+    if (argc < 1) {
+        return JS_EXCEPTION;
+    }
+
+    ElementPrivate *parent_priv = JS_GetOpaque(this_val, js_element_class_id);
+    ElementPrivate *child_priv = JS_GetOpaque(argv[0], js_element_class_id);
+
+    fprintf(stderr, "[WISP DOM DEBUG] Element.appendChild: parent_priv=%p (ptr=%p), child_priv=%p (ptr=%p)\n",
+            (void*)parent_priv, parent_priv ? parent_priv->private_ptr : NULL,
+            (void*)child_priv, child_priv ? child_priv->private_ptr : NULL);
+    fflush(stderr);
+
+    if (!parent_priv || !child_priv || !parent_priv->private_ptr || !child_priv->private_ptr) {
+        fprintf(stderr, "[WISP DOM DEBUG] WARNING: parent or child private_ptr is NULL!\n");
+        fflush(stderr);
+        JS_ThrowInternalError(ctx, "Invalid node");
+        return JS_EXCEPTION;
+    }
+
+    dom_node *parent_node = (dom_node *)parent_priv->private_ptr;
+    dom_node *child_node = (dom_node *)child_priv->private_ptr;
+    dom_node *result = NULL;
+
+    /* 실제 libdom 자식 노드 추가 호출 */
+    dom_exception exc = dom_node_append_child(parent_node, child_node, &result);
+    if (exc != DOM_NO_ERR) {
+        fprintf(stderr, "[WISP DOM DEBUG] dom_node_append_child failed with code: %d\n", exc);
+        fflush(stderr);
+        JS_ThrowInternalError(ctx, "Failed to append child");
+        return JS_EXCEPTION;
+    }
+
+    /* 자식 노드를 성공적으로 추가한 후, JS 객체를 다시 반환 (DOM 표준 동작) */
+    return JS_DupValue(ctx, argv[0]);
+}
+
+static JSValue
+js_element_get_textContent(JSContext *ctx, JSValueConst this_val)
+{
+    NSLOG(wisp, INFO, "Element.textContent get called");
+    return JS_NewString(ctx, "");
+}
+
+static JSValue
+js_element_namespaceURI(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.namespaceURI() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_prefix(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.prefix() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_localName(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.localName() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_tagName(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.tagName() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_id(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.id() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_className(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.className() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_classList(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.classList() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_hasAttributes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.hasAttributes() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_attributes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.attributes() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_getAttribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.getAttribute() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_getAttributeNS(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.getAttributeNS() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_setAttribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.setAttribute() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_setAttributeNS(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.setAttributeNS() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_removeAttribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.removeAttribute() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_removeAttributeNS(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.removeAttributeNS() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_hasAttribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.hasAttribute() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_hasAttributeNS(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.hasAttributeNS() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_getAttributeNode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.getAttributeNode() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_getAttributeNodeNS(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.getAttributeNodeNS() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_setAttributeNode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.setAttributeNode() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_setAttributeNodeNS(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.setAttributeNodeNS() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_removeAttributeNode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.removeAttributeNode() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_closest(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.closest() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_matches(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.matches() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_getElementsByTagName(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.getElementsByTagName() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_getElementsByTagNameNS(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.getElementsByTagNameNS() called");
+    return JS_UNDEFINED;
+}
+
+static JSValue
+js_element_getElementsByClassName(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    NSLOG(wisp, INFO, "Element.getElementsByClassName() called");
+    return JS_UNDEFINED;
+}
+
+static void
+js_element_finalizer(JSRuntime *rt, JSValue val)
+{
+    ElementPrivate *priv = JS_GetOpaque(val, js_element_class_id);
+    if (priv) {
+        free(priv);
+    }
+}
+
+static JSClassDef js_element_class = {
+    "Element",
+    .finalizer = js_element_finalizer,
+};
+
+static const JSCFunctionListEntry js_element_proto_funcs[] = {
+    JS_CFUNC_DEF("namespaceURI", 0, js_element_namespaceURI),
+    JS_CFUNC_DEF("prefix", 0, js_element_prefix),
+    JS_CFUNC_DEF("localName", 0, js_element_localName),
+    JS_CFUNC_DEF("tagName", 0, js_element_tagName),
+    JS_CFUNC_DEF("id", 0, js_element_id),
+    JS_CFUNC_DEF("className", 0, js_element_className),
+    JS_CFUNC_DEF("classList", 0, js_element_classList),
+    JS_CFUNC_DEF("hasAttributes", 0, js_element_hasAttributes),
+    JS_CFUNC_DEF("attributes", 0, js_element_attributes),
+    JS_CFUNC_DEF("getAttribute", 0, js_element_getAttribute),
+    JS_CFUNC_DEF("getAttributeNS", 0, js_element_getAttributeNS),
+    JS_CFUNC_DEF("setAttribute", 0, js_element_setAttribute),
+    JS_CFUNC_DEF("setAttributeNS", 0, js_element_setAttributeNS),
+    JS_CFUNC_DEF("removeAttribute", 0, js_element_removeAttribute),
+    JS_CFUNC_DEF("removeAttributeNS", 0, js_element_removeAttributeNS),
+    JS_CFUNC_DEF("hasAttribute", 0, js_element_hasAttribute),
+    JS_CFUNC_DEF("hasAttributeNS", 0, js_element_hasAttributeNS),
+    JS_CFUNC_DEF("getAttributeNode", 0, js_element_getAttributeNode),
+    JS_CFUNC_DEF("getAttributeNodeNS", 0, js_element_getAttributeNodeNS),
+    JS_CFUNC_DEF("setAttributeNode", 0, js_element_setAttributeNode),
+    JS_CFUNC_DEF("setAttributeNodeNS", 0, js_element_setAttributeNodeNS),
+    JS_CFUNC_DEF("removeAttributeNode", 0, js_element_removeAttributeNode),
+    JS_CFUNC_DEF("closest", 0, js_element_closest),
+    JS_CFUNC_DEF("matches", 0, js_element_matches),
+    JS_CFUNC_DEF("getElementsByTagName", 0, js_element_getElementsByTagName),
+    JS_CFUNC_DEF("getElementsByTagNameNS", 0, js_element_getElementsByTagNameNS),
+    JS_CFUNC_DEF("getElementsByClassName", 0, js_element_getElementsByClassName),
+    JS_CFUNC_DEF("appendChild", 1, js_element_appendChild),
+    JS_CGETSET_DEF("textContent", js_element_get_textContent, js_element_set_textContent),
+};
+
+int
+qjs_init_element(JSContext *ctx)
+{
+    JSRuntime *rt = JS_GetRuntime(ctx);
+    
+    if (js_element_class_id == 0) {
+        JS_NewClassID(rt, &js_element_class_id);
+    }
+    
+    if (!JS_IsRegisteredClass(rt, js_element_class_id)) {
+        if (JS_NewClass(rt, js_element_class_id, &js_element_class) < 0) {
+            return -1;
+        }
+    }
+    
+    JSValue proto = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, proto, 
+                               js_element_proto_funcs, 
+                               sizeof(js_element_proto_funcs) / sizeof(js_element_proto_funcs[0]));
+    JS_SetClassProto(ctx, js_element_class_id, proto);
+    
+    
+    return 0;
+}

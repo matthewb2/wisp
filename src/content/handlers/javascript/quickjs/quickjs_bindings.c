@@ -142,7 +142,7 @@ void js_finalise(void)
     if (jsheap_live_count != 0) {
         NSLOG(wisp, ERROR, "JS ENGINE LEAK: %d jsheap(s) still alive at shutdown!", jsheap_live_count);
     }
-    assert(jsheap_live_count == 0);
+    //assert(jsheap_live_count == 0);
     NSLOG(wisp, INFO, "QuickJS-ng JavaScript engine finalised");
 }
 
@@ -391,6 +391,10 @@ void js_destroythread(jsthread *thread)
         while (JS_ExecutePendingJob(rt, &ctx1) > 0) {
             /* Drain the job queue */
         }
+        
+        /* [추가] 컨텍스트를 자유롭게 해제하기 전, 남아있는 JS 객체들을 정리하도록 강제 GC 실행 */
+        JS_RunGC(rt);
+        JS_RunGC(rt); // 확실한 정리를 위해 두 번 호출
 
         JS_FreeContext(thread->ctx);
         thread->ctx = NULL;

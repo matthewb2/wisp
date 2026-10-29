@@ -172,7 +172,6 @@ add_library(wisp ${WISP_LIB_TYPE}
     content/handlers/javascript/quickjs/console.c
     content/handlers/javascript/quickjs/window.c
     content/handlers/javascript/quickjs/document.c
-    content/handlers/javascript/quickjs/element.c
     content/handlers/javascript/quickjs/node.c
     desktop/cookie_manager.c
 	desktop/knockout.c
