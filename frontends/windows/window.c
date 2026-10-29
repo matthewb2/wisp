@@ -78,8 +78,6 @@ void nsws_ime_start_composition(HWND hwnd, struct gui_window *gw)
     HIMC hIMC;
     COMPOSITIONFORM compform;
 
-    (void)gw;
-
     hIMC = ImmGetContext(hwnd);
     if (hIMC == NULL) {
         return;
@@ -90,6 +88,13 @@ void nsws_ime_start_composition(HWND hwnd, struct gui_window *gw)
 
     ImmSetCompositionWindow(hIMC, &compform);
     ImmReleaseContext(hwnd, hIMC);
+
+    if (gw != NULL) {
+        /* A new composition starts with an empty string. */
+        gw->ime_composition_len = 0;
+        gw->ime_composing = true;
+        nsws_drawable_ime_invalidate(gw);
+    }
 }
 
 /**
@@ -101,9 +106,15 @@ void nsws_ime_start_composition(HWND hwnd, struct gui_window *gw)
 void nsws_ime_end_composition(HWND hwnd, struct gui_window *gw)
 {
     (void)hwnd;
-    (void)gw;
 
-    /* No per-composition state is kept, so there is nothing to clean up. */
+    if (gw == NULL) {
+        return;
+    }
+
+    /* Discard any composition preview that is still on screen. */
+    gw->ime_composing = false;
+    gw->ime_composition_len = 0;
+    nsws_drawable_ime_invalidate(gw);
 }
 
 /**
@@ -155,9 +166,10 @@ LRESULT nsws_handle_composition(HWND hwnd, struct gui_window *gw, WPARAM wParam,
     HIMC hIMC;
     LONG bytes;
     LONG got;
+    bool handled = false;
     wchar_t wcs[NSWS_IME_MAX_UNITS];
 
-    if ((!(lParam & GCS_RESULTSTR)) || (gw == NULL) || (gw->bw == NULL)) {
+    if ((gw == NULL) || (gw->bw == NULL)) {
         return DefWindowProcW(hwnd, WM_IME_COMPOSITION, wParam, lParam);
     }
 
@@ -166,26 +178,57 @@ LRESULT nsws_handle_composition(HWND hwnd, struct gui_window *gw, WPARAM wParam,
         return DefWindowProcW(hwnd, WM_IME_COMPOSITION, wParam, lParam);
     }
 
-    bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
-    if (bytes <= 0) {
-        ImmReleaseContext(hwnd, hIMC);
-        return 0;
+    /* Update the preview of the string currently being composed. */
+    if (lParam & GCS_COMPSTR) {
+        gw->ime_composing = true;
+        gw->ime_composition_len = 0;
+
+        bytes = ImmGetCompositionStringW(hIMC, GCS_COMPSTR, NULL, 0);
+        if (bytes > (LONG)((NSWS_IME_MAX_UNITS - 1) * sizeof(wchar_t))) {
+            bytes = (LONG)((NSWS_IME_MAX_UNITS - 1) * sizeof(wchar_t));
+        }
+        if (bytes > 0) {
+            got = ImmGetCompositionStringW(hIMC, GCS_COMPSTR, gw->ime_composition, (DWORD)bytes);
+            if (got > 0) {
+                gw->ime_composition_len = (int)(got / (LONG)sizeof(wchar_t));
+                gw->ime_composition[gw->ime_composition_len] = L'\0';
+            }
+        }
+
+        nsws_drawable_ime_invalidate(gw);
     }
 
-    if (bytes > (LONG)((NSWS_IME_MAX_UNITS - 1) * sizeof(wchar_t))) {
-        bytes = (LONG)((NSWS_IME_MAX_UNITS - 1) * sizeof(wchar_t));
-    }
+    /* Commit the composition result to the browser window. */
+    if (lParam & GCS_RESULTSTR) {
+        bytes = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, NULL, 0);
+        if (bytes > (LONG)((NSWS_IME_MAX_UNITS - 1) * sizeof(wchar_t))) {
+            bytes = (LONG)((NSWS_IME_MAX_UNITS - 1) * sizeof(wchar_t));
+        }
+        if (bytes > 0) {
+            got = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, wcs, (DWORD)bytes);
+            if (got > 0) {
+                nsws_ime_send_characters(gw, wcs, (int)(got / (LONG)sizeof(wchar_t)));
+            }
+        }
 
-    got = ImmGetCompositionStringW(hIMC, GCS_RESULTSTR, wcs, (DWORD)bytes);
-    if (got > 0) {
-        nsws_ime_send_characters(gw, wcs, (int)(got / (LONG)sizeof(wchar_t)));
+        /* The committed text replaces the preview. */
+        gw->ime_composing = false;
+        gw->ime_composition_len = 0;
+        nsws_drawable_ime_invalidate(gw);
+
+        handled = true;
     }
 
     ImmReleaseContext(hwnd, hIMC);
 
-    /* The result has been delivered to the core, suppress WM_CHAR
-     * generation from the default handler to avoid duplicate input. */
-    return 0;
+    if (handled) {
+        /* The result has been delivered to the core, suppress WM_CHAR
+         * generation from the default handler to avoid duplicate input. */
+        return 0;
+    }
+
+    /* Let the default handler deal with the remaining composition state. */
+    return DefWindowProcW(hwnd, WM_IME_COMPOSITION, wParam, lParam);
 }
 
 /**
@@ -1733,6 +1776,12 @@ static void win32_window_place_caret(struct gui_window *w, int x, int y, int hei
     CreateCaret(w->drawingarea, (HBITMAP)NULL, 1, height);
     SetCaretPos(x - w->scrollx, y - w->scrolly);
     ShowCaret(w->drawingarea);
+
+    /* Remember the caret location so the IME composition preview can be
+     * rendered in the page at the point where text will be inserted. */
+    w->caret_x = x - w->scrollx;
+    w->caret_y = y - w->scrolly;
+    w->caret_height = height;
 }
 
 

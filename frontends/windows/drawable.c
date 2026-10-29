@@ -394,6 +394,168 @@ static LRESULT nsws_drawable_keydown(struct gui_window *gw, HWND hwnd, WPARAM wp
 
 
 /**
+ * Create the font used to render the in-progress IME composition string.
+ *
+ * \param height The font height in pixels, or 0 for a default.
+ * \return A newly created font, or NULL on failure.
+ */
+static HFONT nsws_ime_create_font(int height)
+{
+    if (height <= 0) {
+        height = 16;
+    }
+
+    return CreateFontW(-height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, HANGEUL_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Malgun Gothic");
+}
+
+
+/**
+ * Measure the drawing area rectangle covered by the composition preview.
+ *
+ * \param gw The window whose composition preview to measure.
+ * \param rect Updated to the rectangle covered by the preview.
+ */
+static void nsws_ime_measure(struct gui_window *gw, RECT *rect)
+{
+    HDC hdc;
+    HFONT font;
+    HFONT oldfont;
+    SIZE extent = {0, 0};
+    int height;
+
+    SetRectEmpty(rect);
+
+    if ((gw == NULL) || (gw->drawingarea == NULL)) {
+        return;
+    }
+
+    height = (gw->caret_height > 0) ? gw->caret_height : 16;
+
+    SetRect(rect, gw->caret_x, gw->caret_y, gw->caret_x + 2, gw->caret_y + height + 2);
+
+    if (gw->ime_composition_len <= 0) {
+        return;
+    }
+
+    hdc = GetDC(gw->drawingarea);
+    if (hdc == NULL) {
+        return;
+    }
+
+    font = nsws_ime_create_font(height);
+    if (font == NULL) {
+        ReleaseDC(gw->drawingarea, hdc);
+        return;
+    }
+
+    oldfont = SelectObject(hdc, font);
+    if (GetTextExtentPoint32W(hdc, gw->ime_composition, gw->ime_composition_len, &extent) != 0) {
+        rect->right = gw->caret_x + extent.cx + 3;
+        if ((gw->caret_y + extent.cy + 2) > rect->bottom) {
+            rect->bottom = gw->caret_y + extent.cy + 2;
+        }
+    }
+    SelectObject(hdc, oldfont);
+    DeleteObject(font);
+
+    ReleaseDC(gw->drawingarea, hdc);
+}
+
+
+/**
+ * Invalidate the area occupied by the IME composition preview.
+ *
+ * Called when the in-progress composition string changes or ends so that the
+ * page and the preview are redrawn without leaving stale text behind.
+ *
+ * \param gw The window whose composition preview needs repainting.
+ */
+void nsws_drawable_ime_invalidate(struct gui_window *gw)
+{
+    RECT oldrect;
+    RECT newrect;
+    RECT unionrect;
+
+    if ((gw == NULL) || (gw->drawingarea == NULL)) {
+        return;
+    }
+
+    oldrect = gw->ime_rect;
+    nsws_ime_measure(gw, &newrect);
+
+    if (!IsRectEmpty(&oldrect)) {
+        UnionRect(&unionrect, &oldrect, &newrect);
+        newrect = unionrect;
+    }
+
+    InvalidateRect(gw->drawingarea, &newrect, FALSE);
+}
+
+
+/**
+ * Draw the in-progress IME composition string at the caret.
+ *
+ * The text is drawn by the frontend (the IME's own composition window is
+ * suppressed) so that the composition is visible directly in the page with an
+ * underline, matching the behaviour of native Windows text controls.
+ *
+ * \param gw The window whose composition preview to draw.
+ * \param hdc The device context to draw on.
+ */
+static void nsws_ime_paint(struct gui_window *gw, HDC hdc)
+{
+    HFONT font;
+    HFONT oldfont;
+    RECT rect;
+    RECT underline;
+    SIZE extent = {0, 0};
+    COLORREF oldcolour;
+    int oldmode;
+    int height;
+
+    SetRectEmpty(&gw->ime_rect);
+
+    if ((gw->ime_composition_len <= 0) || (hdc == NULL)) {
+        return;
+    }
+
+    height = (gw->caret_height > 0) ? gw->caret_height : 16;
+
+    font = nsws_ime_create_font(height);
+    if (font == NULL) {
+        return;
+    }
+
+    oldfont = SelectObject(hdc, font);
+
+    GetTextExtentPoint32W(hdc, gw->ime_composition, gw->ime_composition_len, &extent);
+    if (extent.cy > height) {
+        height = extent.cy;
+    }
+
+    SetRect(&rect, gw->caret_x, gw->caret_y, gw->caret_x + extent.cx + 2, gw->caret_y + height + 2);
+    gw->ime_rect = rect;
+
+    /* Opaque background so the composition stays legible over page content. */
+    FillRect(hdc, &rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
+
+    oldcolour = SetTextColor(hdc, RGB(0, 0, 0));
+    oldmode = SetBkMode(hdc, TRANSPARENT);
+    TextOutW(hdc, gw->caret_x + 1, gw->caret_y, gw->ime_composition, gw->ime_composition_len);
+    SetBkMode(hdc, oldmode);
+    SetTextColor(hdc, oldcolour);
+
+    /* Underline the composition, as is conventional for IME input. */
+    SetRect(&underline, gw->caret_x, gw->caret_y + height, gw->caret_x + extent.cx + 2, gw->caret_y + height + 2);
+    FillRect(hdc, &underline, (HBRUSH)GetStockObject(BLACK_BRUSH));
+
+    SelectObject(hdc, oldfont);
+    DeleteObject(font);
+}
+
+
+/**
  * Handle paint messages.
  */
 static LRESULT nsws_drawable_paint(struct gui_window *gw, HWND hwnd)
@@ -418,6 +580,8 @@ static LRESULT nsws_drawable_paint(struct gui_window *gw, HWND hwnd)
          */
 
         browser_window_redraw(gw->bw, -gw->scrollx, -gw->scrolly, &clip, &ctx);
+
+        nsws_ime_paint(gw, ps.hdc);
 
         plot_gw = NULL;
     }
@@ -606,6 +770,13 @@ static LRESULT CALLBACK nsws_window_drawable_event_callback(HWND hwnd, UINT msg,
     case WM_IME_STARTCOMPOSITION:
         nsws_ime_start_composition(hwnd, gw);
         return 0;
+
+    case WM_IME_SETCONTEXT:
+        /* The composition string is drawn by nsws_ime_paint, so ask the IME
+         * not to draw its own floating composition window as well.  The
+         * candidate window is unaffected. */
+        lparam &= ~ISC_SHOWUICOMPOSITIONWINDOW;
+        return DefWindowProc(hwnd, msg, wparam, lparam);
 
     case WM_IME_ENDCOMPOSITION:
         nsws_ime_end_composition(hwnd, gw);

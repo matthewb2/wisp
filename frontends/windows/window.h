@@ -76,6 +76,16 @@ struct gui_window {
     RECT *fullscreen; /**< memorize non-fullscreen area */
     RECT redraw; /**< Area needing redraw. */
     int requestscrollx, requestscrolly; /**< scolling requested. */
+
+    /* IME composition preview */
+    wchar_t ime_composition[256]; /**< in-progress composition string (UTF-16) */
+    int ime_composition_len; /**< number of UTF-16 units in ime_composition */
+    bool ime_composing; /**< true while an IME composition is in progress */
+    int caret_x; /**< caret x position in drawing area coordinates */
+    int caret_y; /**< caret y position in drawing area coordinates */
+    int caret_height; /**< caret height in pixels */
+    RECT ime_rect; /**< rectangle of the last drawn composition preview */
+
     struct gui_window *next, *prev; /**< global linked list */
 };
 
